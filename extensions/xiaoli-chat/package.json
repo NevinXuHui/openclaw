@@ -1,0 +1,45 @@
+{
+  "name": "@openclaw/xiaoli-chat",
+  "version": "2026.4.1",
+  "private": true,
+  "description": "OpenClaw Xiaoli Chat channel plugin",
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh",
+    "install:local": "./install-load.sh",
+    "load": "./install-load.sh",
+    "typecheck": "pnpm exec tsc -p ./tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.28"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "xiaoli-chat",
+      "label": "Xiaoli Chat",
+      "selectionLabel": "Xiaoli Chat",
+      "detailLabel": "Xiaoli Chat",
+      "docsPath": "/channels/xiaoli-chat",
+      "docsLabel": "xiaoli-chat",
+      "blurb": "Connect OpenClaw to Xiaoli Chat.",
+      "systemImage": "bubble.left.and.bubble.right"
+    },
+    "install": {
+      "npmSpec": "@openclaw/xiaoli-chat",
+      "localPath": "extensions/xiaoli-chat",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.3.28"
+    }
+  }
+}

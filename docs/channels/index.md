@@ -36,6 +36,7 @@ Text is supported everywhere; media and reactions vary by channel.
 - [WebChat](/web/webchat) — Gateway WebChat UI over WebSocket.
 - [WeChat](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin) — Tencent iLink Bot plugin via QR login; private chats only.
 - [WhatsApp](/channels/whatsapp) — Most popular; uses Baileys and requires QR pairing.
+- [Xiaoli Chat](/channels/xiaoli-chat) — Bundled example webhook-based channel plugin for integrating an external chat platform.
 - [Zalo](/channels/zalo) — Zalo Bot API; Vietnam's popular messenger (plugin, installed separately).
 - [Zalo Personal](/channels/zalouser) — Zalo personal account via QR login (plugin, installed separately).
 

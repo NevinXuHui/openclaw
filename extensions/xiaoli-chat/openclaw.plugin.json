@@ -1,0 +1,34 @@
+{
+  "id": "xiaoli-chat",
+  "kind": "channel",
+  "channels": ["xiaoli-chat"],
+  "name": "Xiaoli Chat",
+  "description": "Xiaoli Chat channel plugin",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "channels": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "xiaoli-chat": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "token": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "allowFrom": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "dmSecurity": { "type": "string" },
+              "webhookSecret": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
