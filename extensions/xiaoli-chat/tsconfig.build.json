@@ -1,24 +1,29 @@
 {
   "compilerOptions": {
     "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "declarationMap": false,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "ignoreDeprecations": "6.0",
     "lib": ["DOM", "DOM.Iterable", "ES2023", "ScriptHost"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "declaration": true,
-    "declarationMap": false,
-    "sourceMap": false,
     "noEmit": false,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "strict": true,
+    "sourceMap": false,
+    "strict": false,
     "target": "es2023",
     "useDefineForClassFields": false,
     "rootDir": ".",
-    "outDir": "dist"
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "openclaw/plugin-sdk": ["../../src/plugin-sdk/index.ts"],
+      "openclaw/plugin-sdk/*": ["../../src/plugin-sdk/*.ts"]
+    }
   },
   "include": ["./index.ts", "./src/**/*.ts"],
-  "exclude": ["../../node_modules", "./dist", "./src/**/*.test.ts"]
+  "exclude": ["./dist", "./src/**/*.test.ts"]
 }

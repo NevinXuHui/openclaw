@@ -29,6 +29,7 @@ export type XiaoliInboundMessage = {
   text: string;
   threadId?: string;
   isDirectMessage: boolean;
+  thinking?: string; // 思考模式: "off" | "low" | "medium" | "high" | "xhigh"
 };
 
 export type XiaoliSendMessageParams = {

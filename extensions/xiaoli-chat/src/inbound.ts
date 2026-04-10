@@ -18,6 +18,7 @@ export function normalizeInboundMessage(payload: unknown): XiaoliInboundMessage 
     text: String(data.text ?? ""),
     threadId: readOptionalString(data.threadId),
     isDirectMessage: Boolean(data.isDirectMessage),
+    thinking: readOptionalString(data.thinking),
   };
 }
 

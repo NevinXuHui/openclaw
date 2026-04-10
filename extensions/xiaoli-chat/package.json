@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/xiaoli-chat",
-  "version": "2026.4.1",
+  "version": "2026.4.9-beta.1",
   "private": true,
   "description": "OpenClaw Xiaoli Chat channel plugin",
   "type": "module",
@@ -40,6 +40,9 @@
       "localPath": "extensions/xiaoli-chat",
       "defaultChoice": "npm",
       "minHostVersion": ">=2026.3.28"
+    },
+    "build": {
+      "openclawVersion": "2026.4.9-beta.1"
     }
   }
 }

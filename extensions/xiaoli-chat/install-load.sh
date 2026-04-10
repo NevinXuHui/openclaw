@@ -5,17 +5,37 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 PLUGIN_DIR="${SCRIPT_DIR}"
 PLUGIN_ID="xiaoli-chat"
+INSTALL_MODE="local"  # 默认本地路径模式
 
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
       cat <<'EOF'
-Usage: ./install-load.sh
+Usage: ./install-load.sh [OPTIONS]
 
-Builds the local Xiaoli Chat plugin, installs it into OpenClaw from the local path,
-enables it, and restarts the gateway.
+Builds the local Xiaoli Chat plugin, installs it into OpenClaw, enables it, and restarts the gateway.
+
+Options:
+  --local     Install from local path (development mode, default)
+  --copy      Copy to ~/.openclaw/extensions/ (production mode)
+  -h, --help  Show this help message
+
+Install Modes:
+  --local: Direct reference to source directory (best for development)
+           - Changes take effect after rebuild + gateway restart
+           - installPath = sourcePath = /mine/Code/ai-tools/openclaw/extensions/xiaoli-chat
+
+  --copy:  Copy to ~/.openclaw/extensions/ (simulates npm install)
+           - Independent copy in user directory
+           - installPath = ~/.openclaw/extensions/xiaoli-chat
 EOF
       exit 0
+      ;;
+    --local)
+      INSTALL_MODE="local"
+      ;;
+    --copy)
+      INSTALL_MODE="copy"
       ;;
     *)
       printf 'Unknown argument: %s\n' "$arg" >&2
@@ -451,16 +471,61 @@ fi
 printf 'Preflight checks passed.\n'
 cd "${REPO_ROOT}"
 
-printf '[1/4] Building %s...\n' "${PLUGIN_ID}"
+printf '[1/5] Building %s...\n' "${PLUGIN_ID}"
 "${PLUGIN_DIR}/build.sh"
 
-printf '[2/4] Installing %s from local path...\n' "${PLUGIN_ID}"
-openclaw plugins install -l "${PLUGIN_DIR}"
+if [[ "${INSTALL_MODE}" == "copy" ]]; then
+  INSTALL_TARGET="/home/xuhui/.openclaw/extensions/${PLUGIN_ID}"
+  TEMP_TARGET="${INSTALL_TARGET}.tmp.$$"
 
-printf '[3/4] Enabling %s...\n' "${PLUGIN_ID}"
-openclaw plugins enable "${PLUGIN_ID}"
+  # 检查是否已安装,如果已安装则卸载配置
+  if openclaw plugins inspect "${PLUGIN_ID}" >/dev/null 2>&1; then
+    printf '[2/5] Uninstalling existing %s configuration...\n' "${PLUGIN_ID}"
+    openclaw plugins uninstall "${PLUGIN_ID}" -y 2>/dev/null || true
+  fi
 
-printf '[4/4] Restarting gateway...\n'
+  # 删除旧文件 (如果存在)
+  if [[ -d "${INSTALL_TARGET}" ]]; then
+    printf '[2/5] Removing old installation at %s...\n' "${INSTALL_TARGET}"
+    rm -rf "${INSTALL_TARGET}"
+  fi
+
+  # 清理可能存在的临时目录
+  rm -rf "${TEMP_TARGET}"
+
+  printf '[2/5] Preparing files in temporary directory...\n'
+  mkdir -p "${TEMP_TARGET}"
+
+  # 复制编译后的文件到根目录 (不保留 dist/ 子目录)
+  cp -r "${PLUGIN_DIR}/dist/"* "${TEMP_TARGET}/"
+  cp "${PLUGIN_DIR}/openclaw.plugin.json" "${TEMP_TARGET}/"
+
+  # 复制 package.json 并修正入口路径
+  sed 's|"./index.ts"|"./index.js"|g' "${PLUGIN_DIR}/package.json" > "${TEMP_TARGET}/package.json"
+
+  # 重命名到最终位置
+  mv "${TEMP_TARGET}" "${INSTALL_TARGET}"
+
+  printf '[3/5] Plugin copied to %s\n' "${INSTALL_TARGET}"
+  printf '[3/5] OpenClaw will auto-discover it on next restart\n'
+
+  printf '[4/5] Enabling %s...\n' "${PLUGIN_ID}"
+  openclaw plugins enable "${PLUGIN_ID}"
+else
+  # 本地路径模式:检查是否已安装,如果已安装则先卸载
+  if openclaw plugins inspect "${PLUGIN_ID}" >/dev/null 2>&1; then
+    printf '[2/5] Uninstalling existing %s...\n' "${PLUGIN_ID}"
+    openclaw plugins uninstall "${PLUGIN_ID}" -y 2>/dev/null || true
+  fi
+
+  printf '[2/5] Installing %s from local path (development mode)...\n' "${PLUGIN_ID}"
+  openclaw plugins install -l "${PLUGIN_DIR}"
+
+  printf '[4/5] Enabling %s...\n' "${PLUGIN_ID}"
+  openclaw plugins enable "${PLUGIN_ID}"
+fi
+
+printf '[5/5] Restarting gateway...\n'
 openclaw gateway restart
 
 printf '\nDone. Verify with:\n'

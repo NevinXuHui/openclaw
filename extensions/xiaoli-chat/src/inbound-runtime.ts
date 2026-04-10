@@ -60,6 +60,7 @@ export async function handleXiaoliInboundMessage(params: {
     bodyForAgent: message.text,
     commandBody: message.text,
     extraContext: message.threadId ? { ThreadId: message.threadId } : undefined,
+    thinkingLevel: message.thinking as any, // 传递 thinking 参数
     deliver: async (payload) => {
       const replyText = extractReplyText(payload);
       if (!replyText.trim()) {
