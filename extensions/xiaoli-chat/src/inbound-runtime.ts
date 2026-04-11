@@ -4,25 +4,18 @@ import {
   type OpenClawConfig,
   type PluginRuntime,
 } from "openclaw/plugin-sdk/core";
+import {
+  type OutboundReplyPayload,
+  resolveSendableOutboundReplyParts,
+} from "openclaw/plugin-sdk/reply-payload";
 import { resolveXiaoliAccount } from "./config.js";
-import { sendText } from "./outbound.js";
+import { sendMedia, sendText } from "./outbound.js";
 import type { XiaoliInboundMessage, XiaoliMediaAttachment } from "./types.js";
 
 type XiaoliInboundLogger = {
   info?: (message: string) => void;
   error?: (message: string) => void;
 };
-
-function extractReplyText(payload: unknown): string {
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (payload && typeof payload === "object" && "text" in payload) {
-    const text = (payload as { text?: unknown }).text;
-    return typeof text === "string" ? text : "";
-  }
-  return "";
-}
 
 function buildMediaContext(
   media: XiaoliMediaAttachment[] | undefined,
@@ -89,22 +82,36 @@ export async function handleXiaoliInboundMessage(params: {
       ...mediaContext,
       ...(message.thinking ? { thinking: message.thinking } : {}),
     },
-    deliver: async (payload) => {
-      const replyText = extractReplyText(payload);
-      if (!replyText.trim()) {
+    deliver: async (payload: OutboundReplyPayload) => {
+      const reply = resolveSendableOutboundReplyParts(payload);
+      if (!reply.hasContent) {
         return;
       }
+
+      if (reply.hasMedia) {
+        for (const [index, mediaUrl] of reply.mediaUrls.entries()) {
+          await sendMedia({
+            account,
+            chatId: message.chatId,
+            text: index === 0 ? reply.text : "",
+            mediaUrl,
+            threadId: message.threadId,
+          });
+        }
+        return;
+      }
+
       await sendText({
         account,
         chatId: message.chatId,
-        text: replyText,
+        text: reply.text,
         threadId: message.threadId,
       });
     },
-    onRecordError: (error) => {
+    onRecordError: (error: unknown) => {
       params.logger?.error?.(`xiaoli-chat failed to record inbound session: ${String(error)}`);
     },
-    onDispatchError: (error, info) => {
+    onDispatchError: (error: unknown, info: { kind: string }) => {
       params.logger?.error?.(`xiaoli-chat ${info.kind} reply failed: ${String(error)}`);
     },
   });
