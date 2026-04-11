@@ -29,11 +29,20 @@ type OpenClawMessage struct {
 	Message string `json:"message"`
 }
 
+// MediaAttachment 媒体附件
+type MediaAttachment struct {
+	URL  string `json:"url"`
+	Type string `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
 // ReplyMessage 存储回复消息
 type ReplyMessage struct {
 	ChatID    string    `json:"chatId"`
 	Text      string    `json:"text"`
 	ThreadID  string    `json:"threadId,omitempty"`
+	MediaURL  string    `json:"mediaUrl,omitempty"`
+	MediaType string    `json:"mediaType,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -44,13 +53,13 @@ type SSEClient struct {
 }
 
 var (
-	webhookSecret  = os.Getenv("WEBHOOK_SECRET")
-	openclawURL    = os.Getenv("OPENCLAW_URL") // OpenClaw gateway 地址
-	openclawToken  = os.Getenv("OPENCLAW_TOKEN")
-	xiaoliToken    = getEnv("XIAOLI_TOKEN", "test-token-12345") // Xiaoli Chat API token
-	listenPort     = getEnv("PORT", "8080")
-	recentReplies  = make([]ReplyMessage, 0, 100) // 存储最近 100 条回复
-	sseClients     = make(map[*SSEClient]bool)    // SSE 客户端连接池
+	webhookSecret = os.Getenv("WEBHOOK_SECRET")
+	openclawURL   = os.Getenv("OPENCLAW_URL") // OpenClaw gateway 地址
+	openclawToken = os.Getenv("OPENCLAW_TOKEN")
+	xiaoliToken   = getEnv("XIAOLI_TOKEN", "test-token-12345") // Xiaoli Chat API token
+	listenPort    = getEnv("PORT", "8080")
+	recentReplies = make([]ReplyMessage, 0, 100) // 存储最近 100 条回复
+	sseClients    = make(map[*SSEClient]bool)    // SSE 客户端连接池
 )
 
 func main() {
@@ -128,16 +137,38 @@ func handleMessageEvent(data map[string]interface{}) {
 	message, _ := data["message"].(string)
 	channel, _ := data["channel"].(string)
 
-	log.Printf("收到消息: user=%s, channel=%s, message=%s", user, channel, message)
+	// 解析媒体附件
+	var media []MediaAttachment
+	if rawMedia, ok := data["media"].([]interface{}); ok {
+		for _, item := range rawMedia {
+			if m, ok := item.(map[string]interface{}); ok {
+				attachment := MediaAttachment{}
+				if url, ok := m["url"].(string); ok {
+					attachment.URL = url
+				}
+				if t, ok := m["type"].(string); ok {
+					attachment.Type = t
+				}
+				if n, ok := m["name"].(string); ok {
+					attachment.Name = n
+				}
+				if attachment.URL != "" {
+					media = append(media, attachment)
+				}
+			}
+		}
+	}
+
+	log.Printf("收到消息: user=%s, channel=%s, message=%s, media=%d", user, channel, message, len(media))
 
 	// 转发消息到 OpenClaw
-	if err := forwardToOpenClaw(channel, user, message); err != nil {
+	if err := forwardToOpenClaw(channel, user, message, media); err != nil {
 		log.Printf("转发到 OpenClaw 失败: %v", err)
 	}
 }
 
 // forwardToOpenClaw 将消息转发到 OpenClaw xiaoli-chat webhook 端点
-func forwardToOpenClaw(channel, user, message string) error {
+func forwardToOpenClaw(channel, user, message string, media []MediaAttachment) error {
 	// 构造 OpenClaw xiaoli-chat 插件期望的消息格式
 	xiaoliMsg := map[string]interface{}{
 		"senderId":        user,
@@ -145,6 +176,9 @@ func forwardToOpenClaw(channel, user, message string) error {
 		"messageId":       fmt.Sprintf("msg-%d", time.Now().UnixNano()),
 		"text":            message,
 		"isDirectMessage": true,
+	}
+	if len(media) > 0 {
+		xiaoliMsg["media"] = media
 	}
 
 	jsonData, err := json.Marshal(xiaoliMsg)
@@ -335,9 +369,11 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 解析 OpenClaw 的回复
 	var reply struct {
-		ChatID   string `json:"chatId"`
-		Text     string `json:"text"`
-		ThreadID string `json:"threadId,omitempty"`
+		ChatID    string `json:"chatId"`
+		Text      string `json:"text"`
+		ThreadID  string `json:"threadId,omitempty"`
+		MediaURL  string `json:"mediaUrl,omitempty"`
+		MediaType string `json:"mediaType,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &reply); err != nil {
@@ -353,6 +389,8 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		ChatID:    reply.ChatID,
 		Text:      reply.Text,
 		ThreadID:  reply.ThreadID,
+		MediaURL:  reply.MediaURL,
+		MediaType: reply.MediaType,
 		Timestamp: time.Now(),
 	}
 

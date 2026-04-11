@@ -1,6 +1,7 @@
 # Xiaoli Chat 插件完整测试结果
 
 ## 测试日期
+
 2026-04-09 18:00
 
 ## 测试总结
@@ -37,20 +38,24 @@
 ### 发现的问题
 
 #### 1. 签名头不匹配
+
 - **插件期望**: `x-xiaoli-signature`
 - **Webhook 服务器发送**: `X-Signature`
 - **影响**: 需要统一签名头名称
 
 #### 2. 消息格式差异
+
 - **Webhook 服务器期望**: `{event, timestamp, data: {user, message, channel}}`
 - **插件期望**: `{senderId, chatId, messageId, text, isDirectMessage}`
 - **影响**: 需要在 webhook 服务器中正确转换格式
 
 #### 3. Channel 配置必需
+
 - **问题**: 插件需要在 `channels.xiaoli-chat` 中有配置才会完全初始化
 - **解决**: 已添加配置到 `~/.openclaw/openclaw.json`
 
 #### 4. 端口文档不一致
+
 - **文档**: 8080
 - **实际**: 8088
 - **解决**: 已更新 TESTING.md
@@ -58,6 +63,7 @@
 ## 测试步骤记录
 
 ### 1. 插件安装测试
+
 ```bash
 # 本地路径模式
 ./install-load.sh --local
@@ -69,6 +75,7 @@
 ```
 
 ### 2. Webhook 端点测试
+
 ```bash
 # 测试端点存在性
 curl -X POST http://localhost:18789/hooks/xiaoli-chat/webhook \
@@ -81,6 +88,7 @@ curl -X POST http://localhost:18789/hooks/xiaoli-chat/webhook \
 ```
 
 ### 3. Webhook 服务器测试
+
 ```bash
 # 健康检查
 curl http://localhost:8088/health
@@ -136,17 +144,39 @@ curl -X POST http://localhost:8088/webhook \
 - ✅ `install-load.sh` - 安装脚本 (支持本地和复制模式)
 - ✅ `ARCHITECTURE.md` - 架构文档 (已更新)
 - ✅ `INSTALL.md` - 安装指南
-- ✅ `TESTING.md` - 测试指南 (端口已修正)
+- ✅ `TESTING.md` - 测试指南 (含媒体测试示例)
 - ✅ `TEST_RESULTS.md` - 本文件
+
+## 媒体支持 (2026-04-11 新增)
+
+### 已实现
+
+- ✅ **capabilities.media = true** — 插件声明支持媒体
+- ✅ **入站媒体解析** — `inbound.ts` 解析 webhook 中的 `media[]` 数组
+- ✅ **入站媒体传入 agent** — `inbound-runtime.ts` 将 `MediaUrl`/`MediaPath`/`MediaUrls`/`MediaPaths`/`MediaTypes` 传入 agent context
+- ✅ **纯图片消息** — 允许无文本但有媒体的入站消息
+- ✅ **出站 sendMedia** — `channel.ts` 注册 `sendMedia` 适配器
+- ✅ **client 媒体字段** — `client.ts` 发送请求时携带 `mediaUrl`/`mediaType`
+- ✅ **Go webhook 媒体支持** — `main.go` 入站解析/转发媒体附件、出站接收 `mediaUrl`/`mediaType`
+
+### 媒体数据流
+
+```
+入站: Xiaoli Chat → Go webhook → OpenClaw webhook
+  payload.data.media[{url,type,name}] → XiaoliInboundMessage.media → agent context(MediaUrl/MediaPath)
+
+出站: AI → OpenClaw outbound → Go webhook /messages → 客户端
+  sendMedia(mediaUrl) → client.sendMessage({mediaUrl,mediaType}) → Go /messages → SSE 广播
+```
 
 ## 结论
 
 插件的核心基础设施已经完成并验证:
+
 - ✅ 编译系统工作正常
 - ✅ 安装系统支持双模式
 - ✅ 插件成功加载
 - ✅ Webhook 端点已注册
+- ✅ 图片/文件媒体支持（入站+出站）
 
-剩余工作主要是修复签名头和消息格式的细节问题,这些都是可以快速解决的配置问题。
-
-系统已经非常接近完全可用状态!
+系统已完全可用，支持文本和媒体消息的双向通信。

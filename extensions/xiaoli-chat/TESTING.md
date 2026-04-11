@@ -132,22 +132,86 @@ curl http://localhost:8088/health
 # {"status":"ok"}
 ```
 
-### 2. 测试 Webhook 接收
+### 2. 测试 Webhook 接收（纯文本）
 
 ```bash
-# 模拟 Xiaoli Chat 发送消息
+# 模拟 Xiaoli Chat 发送文本消息
 curl -X POST http://localhost:8088/webhook \
   -H "Content-Type: application/json" \
   -H "X-Xiaoli-Signature: <计算的签名>" \
   -d '{
-    "messageId": "test-123",
-    "userId": "user-456",
-    "content": "你好",
-    "timestamp": 1234567890
+    "event": "message",
+    "timestamp": 1234567890,
+    "data": {
+      "user": "user-456",
+      "channel": "xiaoli-chat",
+      "message": "你好"
+    }
   }'
 ```
 
-### 3. 查看日志
+### 3. 测试 Webhook 接收（带图片/文件）
+
+```bash
+# 模拟发送带图片的消息
+curl -X POST http://localhost:8088/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Xiaoli-Signature: <计算的签名>" \
+  -d '{
+    "event": "message",
+    "timestamp": 1234567890,
+    "data": {
+      "user": "user-456",
+      "channel": "xiaoli-chat",
+      "message": "看看这张图",
+      "media": [
+        {
+          "url": "https://example.com/photo.jpg",
+          "type": "image/jpeg",
+          "name": "photo.jpg"
+        }
+      ]
+    }
+  }'
+
+# 模拟发送纯图片（无文本）
+curl -X POST http://localhost:8088/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Xiaoli-Signature: <计算的签名>" \
+  -d '{
+    "event": "message",
+    "timestamp": 1234567890,
+    "data": {
+      "user": "user-456",
+      "channel": "xiaoli-chat",
+      "message": "",
+      "media": [
+        {
+          "url": "https://example.com/document.pdf",
+          "type": "application/pdf",
+          "name": "report.pdf"
+        }
+      ]
+    }
+  }'
+```
+
+### 4. 测试出站媒体（OpenClaw → Xiaoli Chat）
+
+```bash
+# 模拟 OpenClaw 发送带媒体的回复到 webhook 服务器
+curl -X POST http://localhost:8088/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test-token-12345" \
+  -d '{
+    "chatId": "xiaoli-chat",
+    "text": "这是生成的图片",
+    "mediaUrl": "https://example.com/generated-image.png",
+    "mediaType": "image/png"
+  }'
+```
+
+### 5. 查看日志
 
 **Webhook 服务器日志**:
 
@@ -161,16 +225,16 @@ tail -f /mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/webhook.log
 openclaw gateway logs
 ```
 
-### 4. 端到端测试
+### 6. 端到端测试
 
 1. 在 Xiaoli Chat 平台配置 Webhook URL:
 
    ```
    http://your-server:8088/webhook
    ```
+
 2. 在 Xiaoli Chat 发送消息给机器人
 3. 观察日志:
-
    - Webhook 服务器收到消息
    - 转发到 OpenClaw
    - OpenClaw 处理并生成回复

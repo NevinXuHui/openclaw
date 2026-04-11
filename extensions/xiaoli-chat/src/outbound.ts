@@ -14,3 +14,21 @@ export async function sendText(params: {
     threadId: params.threadId,
   });
 }
+
+export async function sendMedia(params: {
+  account: ResolvedXiaoliAccount;
+  chatId: string;
+  text: string;
+  mediaUrl: string;
+  mediaType?: string;
+  threadId?: string;
+}): Promise<{ messageId: string }> {
+  const client = new XiaoliChatClient(params.account);
+  return await client.sendMessage({
+    chatId: params.chatId,
+    text: params.text,
+    threadId: params.threadId,
+    mediaUrl: params.mediaUrl,
+    mediaType: params.mediaType,
+  });
+}

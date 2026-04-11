@@ -7,6 +7,8 @@
 - ✅ 接收 Xiaoli Chat webhook 请求
 - ✅ HMAC-SHA256 签名验证
 - ✅ 消息转发到 OpenClaw Gateway
+- ✅ 图片/文件媒体附件支持（入站和出站）
+- ✅ SSE 实时推送（含媒体字段）
 - ✅ 健康检查端点
 - ✅ 环境变量配置
 
@@ -46,11 +48,13 @@ go build -o webhook-server main.go
 ### 3. 测试服务器
 
 健康检查：
+
 ```bash
 curl http://localhost:8080/health
 ```
 
 测试 webhook（需要正确的签名）：
+
 ```bash
 curl -X POST http://localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -66,6 +70,26 @@ curl -X POST http://localhost:8080/webhook \
   }'
 ```
 
+测试带图片的 webhook：
+
+```bash
+curl -X POST http://localhost:8080/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Signature: your-signature" \
+  -d '{
+    "event": "message",
+    "timestamp": 1234567890,
+    "data": {
+      "user": "test-user",
+      "channel": "xiaoli-chat",
+      "message": "看看这张图",
+      "media": [
+        {"url": "https://example.com/photo.jpg", "type": "image/jpeg", "name": "photo.jpg"}
+      ]
+    }
+  }'
+```
+
 ## API 端点
 
 ### POST /webhook
@@ -73,10 +97,12 @@ curl -X POST http://localhost:8080/webhook \
 接收 Xiaoli Chat webhook 请求。
 
 **请求头：**
+
 - `Content-Type: application/json`
 - `X-Signature: <HMAC-SHA256 签名>`
 
 **请求体：**
+
 ```json
 {
   "event": "message",
@@ -84,20 +110,61 @@ curl -X POST http://localhost:8080/webhook \
   "data": {
     "user": "username",
     "channel": "channel-id",
-    "message": "消息内容"
+    "message": "消息内容",
+    "media": [
+      {
+        "url": "https://example.com/photo.jpg",
+        "type": "image/jpeg",
+        "name": "photo.jpg"
+      }
+    ]
   }
 }
 ```
+
+> `media` 字段为可选数组。每个附件包含 `url`（必填）、`type`（MIME 类型，可选）、`name`（文件名，可选）。
 
 ### GET /health
 
 健康检查端点。
 
 **响应：**
+
 ```json
 {
   "status": "healthy",
   "time": "2026-04-09T10:00:00Z"
+}
+```
+
+### POST /messages
+
+接收来自 OpenClaw 的回复。
+
+**请求头：**
+
+- `Content-Type: application/json`
+- `Authorization: Bearer <token>`
+
+**请求体：**
+
+```json
+{
+  "chatId": "channel-id",
+  "text": "回复内容",
+  "threadId": "可选",
+  "mediaUrl": "https://example.com/generated-image.png",
+  "mediaType": "image/png"
+}
+```
+
+> `mediaUrl` 和 `mediaType` 为可选字段。当 AI 生成了图片或文件时，OpenClaw 会通过这两个字段传递媒体 URL。
+
+**响应：**
+
+```json
+{
+  "id": "message-id"
 }
 ```
 
@@ -135,6 +202,7 @@ WantedBy=multi-user.target
 ```
 
 启动服务：
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable xiaoli-webhook
@@ -160,6 +228,7 @@ CMD ["./webhook-server"]
 ```
 
 构建并运行：
+
 ```bash
 docker build -t xiaoli-webhook .
 docker run -d -p 8080:8080 --env-file .env xiaoli-webhook
@@ -177,6 +246,7 @@ openclaw config set channels.xiaoli-chat.webhookSecret "your-webhook-secret"
 ```
 
 重启 OpenClaw Gateway：
+
 ```bash
 openclaw gateway restart
 ```

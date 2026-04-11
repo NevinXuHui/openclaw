@@ -35,12 +35,13 @@
 4. OpenClaw Gateway
    ↓ POST /messages
    ↓ Authorization: Bearer test-token-12345
-   ↓ Body: {chatId, text, threadId}
+   ↓ Body: {chatId, text, threadId, mediaUrl?, mediaType?}
 
 5. Webhook 服务器 (Go, 端口 8088)
    ✅ Token 认证通过
-   ✅ 接收回复内容
+   ✅ 接收回复内容（含媒体 URL）
    ✅ 返回 messageId
+   ✅ SSE 广播（含媒体字段）
    ✅ 日志记录
 
 6. Xiaoli Chat 平台
@@ -50,6 +51,7 @@
 ## 🎯 实际测试证据
 
 ### 发送的测试消息
+
 ```json
 {
   "event": "message",
@@ -63,6 +65,7 @@
 ```
 
 ### OpenClaw 的 AI 回复
+
 ```
 Hey! You've said hello three times now — I'm definitely here and listening.
 
@@ -71,6 +74,7 @@ Either way, I'm ready when you want to actually chat about something.
 ```
 
 ### Webhook 服务器日志
+
 ```
 2026/04/09 11:31:00 收到 webhook: event=message, timestamp=1712640000
 2026/04/09 11:31:00 收到消息: user=test-user, channel=xiaoli-chat, message=Hello OpenClaw!
@@ -81,24 +85,36 @@ Either way, I'm ready when you want to actually chat about something.
 ## ✅ 已实现的功能清单
 
 ### 请求处理（Xiaoli Chat → OpenClaw）
+
 - [x] 接收 webhook POST 请求
 - [x] HMAC-SHA256 签名验证
 - [x] JSON payload 解析
 - [x] 消息格式转换（外部格式 → OpenClaw 格式）
+- [x] 解析并转发媒体附件（图片/文件）
 - [x] 生成 OpenClaw 签名
 - [x] 转发到 OpenClaw webhook 端点
 - [x] 错误处理和日志记录
 
 ### 响应处理（OpenClaw → Xiaoli Chat）
+
 - [x] 接收 OpenClaw 回复（POST /messages）
 - [x] Bearer Token 认证
-- [x] JSON 回复解析
+- [x] JSON 回复解析（含 mediaUrl/mediaType）
 - [x] 生成 messageId
+- [x] SSE 广播回复（含媒体字段）
 - [x] 返回成功响应
 - [x] 日志记录
 - [ ] 发送到真实 Xiaoli Chat 平台（生产环境需实现）
 
+### 媒体支持
+
+- [x] 入站媒体解析（图片/文件/音频 URL）
+- [x] 媒体附件转发到 OpenClaw（media 数组）
+- [x] 出站媒体 URL 接收（mediaUrl/mediaType）
+- [x] SSE 广播包含媒体字段
+
 ### 辅助功能
+
 - [x] 健康检查端点（GET /health）
 - [x] 环境变量配置
 - [x] 详细日志输出
@@ -107,6 +123,7 @@ Either way, I'm ready when you want to actually chat about something.
 ## 🔧 配置说明
 
 ### 环境变量（.env）
+
 ```bash
 # Webhook 验证密钥（用于验证来自 Xiaoli Chat 的请求）
 WEBHOOK_SECRET=test-secret-12345
@@ -122,6 +139,7 @@ PORT=8088
 ```
 
 ### OpenClaw 配置
+
 ```bash
 openclaw config set channels.xiaoli-chat.enabled true
 openclaw config set channels.xiaoli-chat.token "test-token-12345"
@@ -132,13 +150,16 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
 ## 📡 API 端点
 
 ### 1. POST /webhook
+
 接收来自 Xiaoli Chat 的消息
 
 **请求头**：
+
 - `Content-Type: application/json`
 - `X-Signature: <HMAC-SHA256 签名>`
 
 **请求体**：
+
 ```json
 {
   "event": "message",
@@ -146,12 +167,16 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
   "data": {
     "user": "user-id",
     "channel": "channel-id",
-    "message": "消息内容"
+    "message": "消息内容",
+    "media": [{ "url": "https://example.com/photo.jpg", "type": "image/jpeg", "name": "photo.jpg" }]
   }
 }
 ```
 
+> `media` 为可选数组，每个元素包含 `url`（必填）、`type`（MIME，可选）、`name`（文件名，可选）。
+
 **响应**：
+
 ```json
 {
   "status": "ok"
@@ -159,22 +184,30 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
 ```
 
 ### 2. POST /messages
+
 接收来自 OpenClaw 的回复
 
 **请求头**：
+
 - `Content-Type: application/json`
 - `Authorization: Bearer <token>`
 
 **请求体**：
+
 ```json
 {
   "chatId": "channel-id",
   "text": "回复内容",
-  "threadId": "可选"
+  "threadId": "可选",
+  "mediaUrl": "https://example.com/generated-image.png",
+  "mediaType": "image/png"
 }
 ```
 
+> `mediaUrl` 和 `mediaType` 为可选字段。当 AI 生成了图片或文件时会携带这两个字段。
+
 **响应**：
+
 ```json
 {
   "id": "message-id"
@@ -182,9 +215,11 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
 ```
 
 ### 3. GET /health
+
 健康检查
 
 **响应**：
+
 ```json
 {
   "status": "healthy",
@@ -195,11 +230,13 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
 ## 🔐 安全机制
 
 ### 请求方向安全
+
 1. **HMAC-SHA256 签名验证**
    - 使用 `WEBHOOK_SECRET` 验证请求完整性
    - 防止伪造请求
 
 ### 响应方向安全
+
 1. **Bearer Token 认证**
    - 使用 `XIAOLI_TOKEN` 验证 OpenClaw 身份
    - 防止未授权访问
@@ -211,10 +248,11 @@ openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
 ├── extensions/xiaoli-chat/          # OpenClaw 插件
 │   ├── src/
 │   │   ├── webhook.ts              # Webhook 处理逻辑
-│   │   ├── inbound.ts              # 入站消息处理
-│   │   ├── outbound.ts             # 出站消息发送
-│   │   ├── client.ts               # Xiaoli Chat 客户端
-│   │   └── types.ts                # 类型定义
+│   │   ├── inbound.ts              # 入站消息处理（含媒体解析）
+│   │   ├── inbound-runtime.ts      # 入站运行时（媒体传入 agent context）
+│   │   ├── outbound.ts             # 出站消息发送（sendText + sendMedia）
+│   │   ├── client.ts               # Xiaoli Chat 客户端（支持 mediaUrl）
+│   │   └── types.ts                # 类型定义（含 XiaoliMediaAttachment）
 │   └── dist/                       # 编译输出
 │
 └── xiaoli-chat-webhook/            # Go Webhook 服务器
@@ -272,6 +310,7 @@ func sendToXiaoliChat(chatID, text, threadID string) error {
 ### 2. 使用 HTTPS
 
 生产环境必须使用 HTTPS：
+
 - 申请 SSL 证书（Let's Encrypt）
 - 配置反向代理（Nginx/Caddy）
 - 或在 Go 中直接使用 TLS
@@ -299,6 +338,7 @@ WantedBy=multi-user.target
 ```
 
 启动服务：
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable xiaoli-webhook
@@ -315,21 +355,25 @@ sudo systemctl start xiaoli-webhook
 ## 🧪 测试命令
 
 ### 测试 Webhook 接收
+
 ```bash
 /tmp/test_webhook.sh
 ```
 
 ### 测试健康检查
+
 ```bash
 curl http://localhost:8088/health
 ```
 
 ### 查看日志
+
 ```bash
 tail -f /mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/webhook.log
 ```
 
 ### 查看 OpenClaw 日志
+
 ```bash
 tail -f /tmp/openclaw/openclaw-*.log | grep xiaoli
 ```
@@ -348,6 +392,7 @@ tail -f /tmp/openclaw/openclaw-*.log | grep xiaoli
 3. **格式转换**：外部格式 ↔ OpenClaw 格式
 4. **错误处理**：完善的错误处理和日志
 5. **异步处理**：OpenClaw 异步处理消息
+6. **媒体支持**：入站图片/文件解析 + 出站媒体 URL 传递
 
 ## ✨ 总结
 

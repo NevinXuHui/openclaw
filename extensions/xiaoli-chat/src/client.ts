@@ -14,6 +14,8 @@ export class XiaoliChatClient {
         chatId: params.chatId,
         text: params.text,
         threadId: params.threadId,
+        ...(params.mediaUrl ? { mediaUrl: params.mediaUrl } : {}),
+        ...(params.mediaType ? { mediaType: params.mediaType } : {}),
       }),
     });
 

@@ -1,7 +1,7 @@
 import { DEFAULT_ACCOUNT_ID, createChatChannelPlugin } from "openclaw/plugin-sdk/core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { inspectXiaoliAccount, resolveXiaoliAccount } from "./config.js";
-import { sendText } from "./outbound.js";
+import { sendMedia, sendText } from "./outbound.js";
 import type { ResolvedXiaoliAccount, XiaoliChatConfig } from "./types.js";
 
 const xiaoliChannelMeta = {
@@ -49,7 +49,7 @@ export const xiaoliChatPlugin = createChatChannelPlugin<ResolvedXiaoliAccount>({
     meta: xiaoliChannelMeta,
     capabilities: {
       chatTypes: ["direct", "group", "thread"],
-      media: false,
+      media: true,
       reactions: false,
       threads: true,
       edit: false,
@@ -117,6 +117,26 @@ export const xiaoliChatPlugin = createChatChannelPlugin<ResolvedXiaoliAccount>({
           account: resolveXiaoliAccount(params.cfg, params.accountId),
           chatId: params.to,
           text: params.text,
+          threadId: params.threadId == null ? undefined : String(params.threadId),
+        });
+        return { messageId: result.messageId };
+      },
+      sendMedia: async (params) => {
+        const mediaUrl = params.mediaUrl?.trim();
+        if (!mediaUrl) {
+          const result = await sendText({
+            account: resolveXiaoliAccount(params.cfg, params.accountId),
+            chatId: params.to,
+            text: params.text,
+            threadId: params.threadId == null ? undefined : String(params.threadId),
+          });
+          return { messageId: result.messageId };
+        }
+        const result = await sendMedia({
+          account: resolveXiaoliAccount(params.cfg, params.accountId),
+          chatId: params.to,
+          text: params.text,
+          mediaUrl,
           threadId: params.threadId == null ? undefined : String(params.threadId),
         });
         return { messageId: result.messageId };

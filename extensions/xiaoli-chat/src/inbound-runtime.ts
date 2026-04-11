@@ -6,7 +6,7 @@ import {
 } from "openclaw/plugin-sdk/core";
 import { resolveXiaoliAccount } from "./config.js";
 import { sendText } from "./outbound.js";
-import type { XiaoliInboundMessage } from "./types.js";
+import type { XiaoliInboundMessage, XiaoliMediaAttachment } from "./types.js";
 
 type XiaoliInboundLogger = {
   info?: (message: string) => void;
@@ -18,9 +18,27 @@ function extractReplyText(payload: unknown): string {
     return payload;
   }
   if (payload && typeof payload === "object" && "text" in payload) {
-    return String((payload as { text?: unknown }).text ?? "");
+    const text = (payload as { text?: unknown }).text;
+    return typeof text === "string" ? text : "";
   }
   return "";
+}
+
+function buildMediaContext(
+  media: XiaoliMediaAttachment[] | undefined,
+): Record<string, unknown> | undefined {
+  if (!media || media.length === 0) {
+    return undefined;
+  }
+  const urls = media.map((m) => m.url);
+  const types = media.map((m) => m.type).filter(Boolean) as string[];
+  return {
+    MediaUrl: urls[0],
+    MediaPath: urls[0],
+    MediaUrls: urls,
+    MediaPaths: urls,
+    ...(types.length > 0 ? { MediaType: types[0], MediaTypes: types } : {}),
+  };
 }
 
 export async function handleXiaoliInboundMessage(params: {
@@ -41,6 +59,13 @@ export async function handleXiaoliInboundMessage(params: {
   const accountId = DEFAULT_ACCOUNT_ID;
   const account = resolveXiaoliAccount(cfg, accountId);
 
+  const mediaContext = buildMediaContext(message.media);
+  const bodyForAgent = message.text.trim()
+    ? message.text
+    : message.media?.length
+      ? message.media.map((m) => `[${m.type ?? "file"}: ${m.name ?? m.url}]`).join(" ")
+      : message.text;
+
   await dispatchInboundDirectDmWithRuntime({
     cfg,
     runtime,
@@ -57,10 +82,13 @@ export async function handleXiaoliInboundMessage(params: {
     conversationLabel: message.senderId,
     rawBody: message.text,
     messageId: message.messageId,
-    bodyForAgent: message.text,
+    bodyForAgent,
     commandBody: message.text,
-    extraContext: message.threadId ? { ThreadId: message.threadId } : undefined,
-    thinkingLevel: message.thinking as any, // 传递 thinking 参数
+    extraContext: {
+      ...(message.threadId ? { ThreadId: message.threadId } : {}),
+      ...mediaContext,
+      ...(message.thinking ? { thinking: message.thinking } : {}),
+    },
     deliver: async (payload) => {
       const replyText = extractReplyText(payload);
       if (!replyText.trim()) {
