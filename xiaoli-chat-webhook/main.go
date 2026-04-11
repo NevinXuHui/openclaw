@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -52,35 +56,82 @@ type SSEClient struct {
 	Channel chan ReplyMessage
 }
 
+// maxRequestBodyBytes limits request body size to prevent DoS (1 MB).
+const maxRequestBodyBytes = 1 << 20
+
 var (
 	webhookSecret = os.Getenv("WEBHOOK_SECRET")
 	openclawURL   = os.Getenv("OPENCLAW_URL") // OpenClaw gateway 地址
 	openclawToken = os.Getenv("OPENCLAW_TOKEN")
-	xiaoliToken   = getEnv("XIAOLI_TOKEN", "test-token-12345") // Xiaoli Chat API token
+	xiaoliToken   = os.Getenv("XIAOLI_TOKEN") // Xiaoli Chat API token
 	listenPort    = getEnv("PORT", "8080")
+
 	recentReplies = make([]ReplyMessage, 0, 100) // 存储最近 100 条回复
+	repliesMu     sync.RWMutex                   // 保护 recentReplies
 	sseClients    = make(map[*SSEClient]bool)    // SSE 客户端连接池
+	sseClientsMu  sync.Mutex                     // 保护 sseClients
+
+	// 全局复用 HTTP Client，避免每次请求都新建
+	httpClient = &http.Client{Timeout: 60 * time.Second}
 )
 
 func main() {
 	if webhookSecret == "" {
 		log.Fatal("WEBHOOK_SECRET 环境变量未设置")
 	}
+	if xiaoliToken == "" {
+		log.Fatal("XIAOLI_TOKEN 环境变量未设置")
+	}
 	if openclawURL == "" {
 		openclawURL = "http://localhost:18789" // 默认 OpenClaw gateway 地址
 	}
 
-	http.HandleFunc("/webhook", handleWebhook)
-	http.HandleFunc("/messages", handleMessages)
-	http.HandleFunc("/replies", handleGetReplies)
-	http.HandleFunc("/stream", handleSSEStream)
-	http.HandleFunc("/health", handleHealth)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook", handleWebhook)
+	mux.HandleFunc("/messages", handleMessages)
+	mux.HandleFunc("/replies", handleGetReplies)
+	mux.HandleFunc("/stream", handleSSEStream)
+	mux.HandleFunc("/health", handleHealth)
+
+	server := &http.Server{
+		Addr:    ":" + listenPort,
+		Handler: corsMiddleware(mux),
+	}
+
+	// Graceful shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		log.Printf("收到信号 %v，正在关闭服务器...", sig)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("服务器关闭出错: %v", err)
+		}
+	}()
 
 	log.Printf("Xiaoli Chat Webhook 服务器启动在端口 %s", listenPort)
 	log.Printf("OpenClaw URL: %s", openclawURL)
-	if err := http.ListenAndServe(":"+listenPort, nil); err != nil {
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	log.Println("服务器已安全关闭")
+}
+
+// corsMiddleware 为所有端点添加 CORS 头
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleWebhook 处理来自 Xiaoli Chat 的 webhook 请求
@@ -90,7 +141,8 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 读取请求体
+	// 读取请求体（限制大小防止 DoS）
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("读取请求体失败: %v", err)
@@ -198,8 +250,7 @@ func forwardToOpenClaw(channel, user, message string, media []MediaAttachment) e
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-xiaoli-signature", "sha256="+signature)
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -251,13 +302,23 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 		Channel: make(chan ReplyMessage, 10),
 	}
 
+	// 检查 Flusher 支持
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "不支持 SSE 流", http.StatusInternalServerError)
+		return
+	}
+
 	// 注册客户端
+	sseClientsMu.Lock()
 	sseClients[client] = true
-	log.Printf("SSE 客户端连接: chatId=%s, 当前连接数=%d", chatID, len(sseClients))
+	clientCount := len(sseClients)
+	sseClientsMu.Unlock()
+	log.Printf("SSE 客户端连接: chatId=%s, 当前连接数=%d", chatID, clientCount)
 
 	// 发送连接成功消息
 	fmt.Fprintf(w, "data: {\"type\":\"connected\",\"chatId\":\"%s\"}\n\n", chatID)
-	w.(http.Flusher).Flush()
+	flusher.Flush()
 
 	// 监听客户端断开
 	notify := r.Context().Done()
@@ -267,22 +328,27 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-notify:
 			// 客户端断开
+			sseClientsMu.Lock()
 			delete(sseClients, client)
+			remaining := len(sseClients)
+			sseClientsMu.Unlock()
 			close(client.Channel)
-			log.Printf("SSE 客户端断开: chatId=%s, 剩余连接数=%d", chatID, len(sseClients))
+			log.Printf("SSE 客户端断开: chatId=%s, 剩余连接数=%d", chatID, remaining)
 			return
 
 		case reply := <-client.Channel:
 			// 发送回复消息
 			data, _ := json.Marshal(reply)
 			fmt.Fprintf(w, "data: %s\n\n", string(data))
-			w.(http.Flusher).Flush()
+			flusher.Flush()
 		}
 	}
 }
 
 // broadcastToSSEClients 广播回复到所有 SSE 客户端
 func broadcastToSSEClients(reply ReplyMessage) {
+	sseClientsMu.Lock()
+	defer sseClientsMu.Unlock()
 	for client := range sseClients {
 		// 如果客户端指定了 chatId，只发送匹配的消息
 		if client.ChatID == "" || client.ChatID == reply.ChatID {
@@ -317,6 +383,7 @@ func handleGetReplies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 过滤和返回回复
+	repliesMu.RLock()
 	var filtered []ReplyMessage
 	for i := len(recentReplies) - 1; i >= 0 && len(filtered) < limit; i-- {
 		reply := recentReplies[i]
@@ -324,6 +391,7 @@ func handleGetReplies(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, reply)
 		}
 	}
+	repliesMu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -349,16 +417,17 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验证 Authorization header
+	// 验证 Authorization header（不在日志中打印 token）
 	authHeader := r.Header.Get("Authorization")
 	expectedAuth := "Bearer " + xiaoliToken
 	if authHeader != expectedAuth {
-		log.Printf("认证失败: 期望 %s, 收到 %s", expectedAuth, authHeader)
+		log.Printf("认证失败: Authorization header 不匹配")
 		http.Error(w, "认证失败", http.StatusUnauthorized)
 		return
 	}
 
-	// 读取请求体
+	// 读取请求体（限制大小防止 DoS）
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("读取请求体失败: %v", err)
@@ -395,11 +464,13 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 存储回复到内存
+	repliesMu.Lock()
 	recentReplies = append(recentReplies, replyMsg)
 	// 保持最近 100 条
 	if len(recentReplies) > 100 {
 		recentReplies = recentReplies[1:]
 	}
+	repliesMu.Unlock()
 
 	// 广播到所有 SSE 客户端
 	broadcastToSSEClients(replyMsg)
