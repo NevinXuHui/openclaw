@@ -1,14 +1,19 @@
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
-import { xiaoliChatPlugin } from "./src/channel.js";
-import { setXiaoliRuntime } from "./src/runtime.js";
+import { defineBundledChannelEntry } from "openclaw/plugin-sdk/channel-entry-contract";
 import { createXiaoliWebhookHandler, XIAOLI_WEBHOOK_PATH } from "./src/webhook.js";
 
-export default defineChannelPluginEntry({
+export default defineBundledChannelEntry({
   id: "xiaoli-chat",
   name: "Xiaoli Chat",
   description: "Xiaoli Chat channel plugin",
-  plugin: xiaoliChatPlugin,
-  setRuntime: setXiaoliRuntime,
+  importMetaUrl: import.meta.url,
+  plugin: {
+    specifier: "./channel-plugin-api.js",
+    exportName: "xiaoliChatPlugin",
+  },
+  runtime: {
+    specifier: "./runtime-api.js",
+    exportName: "setXiaoliRuntime",
+  },
   registerFull(api) {
     api.registerHttpRoute({
       path: XIAOLI_WEBHOOK_PATH,

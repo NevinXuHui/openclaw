@@ -1,0 +1,9 @@
+{
+  "event": "message",
+  "timestamp": 1713000000,
+  "data": {
+    "user": "test-user-001",
+    "channel": "test-chat-001",
+    "message": "你好，请简单介绍一下你自己"
+  }
+}

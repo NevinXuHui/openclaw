@@ -57,7 +57,13 @@ export const xiaoliChatPlugin = createChatChannelPlugin<ResolvedXiaoliAccount>({
       reply: true,
       effects: false,
       nativeCommands: false,
-      blockStreaming: false,
+      blockStreaming: true, // 启用流式输出
+    },
+    streaming: {
+      blockStreamingCoalesceDefaults: {
+        minChars: 1,
+        idleMs: 0, // 立即发送，不等待合并
+      },
     },
     config: {
       listAccountIds,

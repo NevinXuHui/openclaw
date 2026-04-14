@@ -221,6 +221,8 @@ func handleMessageEvent(data map[string]interface{}) {
 
 // forwardToOpenClaw 将消息转发到 OpenClaw xiaoli-chat webhook 端点
 func forwardToOpenClaw(channel, user, message string, media []MediaAttachment) error {
+	log.Printf("开始转发到 OpenClaw: user=%s, channel=%s", user, channel)
+
 	// 构造 OpenClaw xiaoli-chat 插件期望的消息格式
 	xiaoliMsg := map[string]interface{}{
 		"senderId":        user,
@@ -451,7 +453,10 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("收到 OpenClaw 回复: chatId=%s, text=%s", reply.ChatID, reply.Text)
+	// 生成 messageID
+	messageID := fmt.Sprintf("reply-%d", time.Now().UnixNano())
+
+	log.Printf("[%s] 收到 OpenClaw 回复: chatId=%s, text=%s", time.Now().Format("15:04:05.000"), reply.ChatID, reply.Text)
 
 	// 创建回复消息
 	replyMsg := ReplyMessage{
@@ -474,10 +479,6 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 广播到所有 SSE 客户端
 	broadcastToSSEClients(replyMsg)
-
-	// 在真实环境中，这里应该将回复发送到 Xiaoli Chat 平台
-	// 现在我们只是记录日志并返回成功
-	messageID := fmt.Sprintf("reply-%d", time.Now().UnixNano())
 
 	log.Printf("✅ 回复已处理: messageId=%s", messageID)
 

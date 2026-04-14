@@ -1,6 +1,6 @@
 {
   "id": "xiaoli-chat",
-  "kind": "channel",
+  "kind": "bundled-channel-entry",
   "channels": ["xiaoli-chat"],
   "name": "Xiaoli Chat",
   "description": "Xiaoli Chat channel plugin",

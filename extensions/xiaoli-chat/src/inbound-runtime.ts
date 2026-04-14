@@ -1,9 +1,5 @@
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
-import {
-  DEFAULT_ACCOUNT_ID,
-  type OpenClawConfig,
-  type PluginRuntime,
-} from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/core";
 import {
   type OutboundReplyPayload,
   resolveSendableOutboundReplyParts,
@@ -49,7 +45,7 @@ export async function handleXiaoliInboundMessage(params: {
   }
 
   const cfg = runtime.config.loadConfig() as OpenClawConfig;
-  const accountId = DEFAULT_ACCOUNT_ID;
+  const accountId = "default";
   const account = resolveXiaoliAccount(cfg, accountId);
 
   const mediaContext = buildMediaContext(message.media);
@@ -59,16 +55,70 @@ export async function handleXiaoliInboundMessage(params: {
       ? message.media.map((m) => `[${m.type ?? "file"}: ${m.name ?? m.url}]`).join(" ")
       : message.text;
 
+  console.log(`[xiaoli-chat] Received message:`, {
+    messageId: message.messageId,
+    senderId: message.senderId,
+    chatId: message.chatId,
+    text: message.text,
+    bodyForAgent,
+    hasMedia: !!message.media?.length,
+  });
+
+  // Create deliver function
+  const deliver = async (payload: OutboundReplyPayload): Promise<void> => {
+    const deliverTime = Date.now();
+    const reply = resolveSendableOutboundReplyParts(payload);
+
+    console.log(
+      `[xiaoli-chat] [${deliverTime}] deliver called, hasContent=${reply.hasContent}, text="${reply.text.substring(0, 50)}"`,
+    );
+
+    if (!reply.hasContent) {
+      return;
+    }
+
+    if (reply.hasMedia) {
+      for (const [index, mediaUrl] of reply.mediaUrls.entries()) {
+        const sendTime = Date.now();
+        console.log(`[xiaoli-chat] [${sendTime}] sending media ${index}`);
+        await sendMedia({
+          account,
+          chatId: message.chatId,
+          text: index === 0 ? reply.text : "",
+          mediaUrl,
+          threadId: message.threadId,
+        }).catch((error) => {
+          params.logger?.error?.(`xiaoli-chat media send failed: ${String(error)}`);
+        });
+      }
+      return;
+    }
+
+    const sendTime = Date.now();
+    console.log(`[xiaoli-chat] [${sendTime}] sending text, starting fetch`);
+    await sendText({
+      account,
+      chatId: message.chatId,
+      text: reply.text,
+      threadId: message.threadId,
+    }).catch((error) => {
+      params.logger?.error?.(`xiaoli-chat text send failed: ${String(error)}`);
+    });
+
+    const returnTime = Date.now();
+    console.log(
+      `[xiaoli-chat] [${returnTime}] deliver completed, took ${returnTime - deliverTime}ms`,
+    );
+  };
+
+  // Use standard dispatch flow with runtime
   await dispatchInboundDirectDmWithRuntime({
     cfg,
     runtime,
     channel: "xiaoli-chat",
-    channelLabel: "Xiaoli Chat",
+    channelLabel: "xiaoli-chat",
     accountId,
-    peer: {
-      kind: "direct",
-      id: message.senderId,
-    },
+    peer: { kind: "direct", id: message.senderId },
     senderId: message.senderId,
     senderAddress: `xiaoli-chat:${message.senderId}`,
     recipientAddress: `xiaoli-chat:${message.chatId}`,
@@ -77,37 +127,16 @@ export async function handleXiaoliInboundMessage(params: {
     messageId: message.messageId,
     bodyForAgent,
     commandBody: message.text,
+    provider: "xiaoli-chat",
+    surface: "xiaoli-chat",
+    originatingChannel: "xiaoli-chat",
+    originatingTo: message.chatId,
     extraContext: {
       ...(message.threadId ? { ThreadId: message.threadId } : {}),
-      ...mediaContext,
       ...(message.thinking ? { thinking: message.thinking } : {}),
+      ...mediaContext,
     },
-    deliver: async (payload: OutboundReplyPayload) => {
-      const reply = resolveSendableOutboundReplyParts(payload);
-      if (!reply.hasContent) {
-        return;
-      }
-
-      if (reply.hasMedia) {
-        for (const [index, mediaUrl] of reply.mediaUrls.entries()) {
-          await sendMedia({
-            account,
-            chatId: message.chatId,
-            text: index === 0 ? reply.text : "",
-            mediaUrl,
-            threadId: message.threadId,
-          });
-        }
-        return;
-      }
-
-      await sendText({
-        account,
-        chatId: message.chatId,
-        text: reply.text,
-        threadId: message.threadId,
-      });
-    },
+    deliver,
     onRecordError: (error: unknown) => {
       params.logger?.error?.(`xiaoli-chat failed to record inbound session: ${String(error)}`);
     },

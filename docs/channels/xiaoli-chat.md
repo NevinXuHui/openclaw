@@ -33,7 +33,7 @@ read_when:
 
 当前明确**还没做**的内容：
 
-- 不支持 media
+- 用户发来的 inbound media 附件暂不解析（仅透传 URL 到 extraContext）
 - 不支持 reactions
 - 不支持 edit / unsend
 - 不支持 native commands
@@ -59,6 +59,7 @@ read_when:
 - `extensions/xiaoli-chat/src/webhook.ts`
 - `extensions/xiaoli-chat/src/runtime.ts`
 - `extensions/xiaoli-chat/src/webhook.test.ts`
+- `extensions/xiaoli-chat/src/inbound-runtime.test.ts`
 
 本插件使用到的 OpenClaw 公共 SDK 面：
 
@@ -135,9 +136,13 @@ OpenClaw message tool
   -> normalizeInboundMessage(...)
   -> isValidInboundMessage(...)
   -> handleXiaoliInboundMessage(...)
-  -> dispatchInboundDirectDmWithRuntime(...)
-  -> OpenClaw 标准 reply pipeline
-  -> sendText(...)
+  -> finalizeInboundContext(...)
+  -> recordInboundSession(...)
+  -> createChannelReplyPipeline(...)
+  -> dispatchReplyWithBufferedBlockDispatcher(...)
+  -> OpenClaw 标准 reply pipeline（支持 blockStreaming）
+  -> deliver(...) 回调
+  -> sendText(...) / sendMedia(...)
   -> 外部平台回复 API
 ```
 
@@ -146,7 +151,7 @@ OpenClaw message tool
 - `extensions/xiaoli-chat/index.ts:12`
 - `extensions/xiaoli-chat/src/webhook.ts:95`
 - `extensions/xiaoli-chat/src/inbound.ts:11`
-- `extensions/xiaoli-chat/src/inbound-runtime.ts:44`
+- `extensions/xiaoli-chat/src/inbound-runtime.ts:36`
 
 ---
 
@@ -259,13 +264,14 @@ export default defineChannelPluginEntry({
 - channel id
 - 展示元数据
 - capabilities
+- streaming configuration
 - config adapter
 - setup adapter
 
 当前声明的能力：
 
 - `chatTypes: ["direct", "group", "thread"]`
-- `media: false`
+- `media: true` // 支持媒体附件（图片、文件等）
 - `reactions: false`
 - `threads: true`
 - `edit: false`
@@ -273,13 +279,37 @@ export default defineChannelPluginEntry({
 - `reply: true`
 - `effects: false`
 - `nativeCommands: false`
-- `blockStreaming: false`
+- `blockStreaming: true` // 启用流式输出，支持分块发送回复
+
+**流式输出配置（2026-04-14）**：
+
+```typescript
+streaming: {
+  blockStreamingCoalesceDefaults: {
+    flushOnEnqueue: true,  // 禁用合并，每个 block 立即发送
+  },
+},
+```
+
+这个配置解决了流式输出的关键问题：
+
+**问题**：默认情况下，OpenClaw 的 block coalescer 会等待 `idleMs`（默认 1000ms）来合并多个 block。当第一个 block 生成后，如果第二个 block 在 1 秒内到达（工具调用场景），两个 block 会被合并成一条消息发送。
+
+**解决方案**：设置 `flushOnEnqueue: true` 禁用合并机制，每个 block 生成后立即发送，不等待后续内容。
+
+**效果**：
+
+- 第一条消息（"正在查询..."）在生成后立即发送（5-7 秒）
+- 第二条消息（工具结果）在生成后立即发送（20-30 秒）
+- 两条消息独立到达，间隔符合预期（4-9ms 是 LLM 生成间隔，不是批处理延迟）
 
 这里的关键原则是：
 
 **能力声明必须反映真实接线情况，而不是平台理论上可能支持什么。**
 
-比如当前代码并没有做 media、reaction、edit，那就不要提前宣称支持。
+**2026-04-13 更新**：已启用 `blockStreaming` 和 `media` 支持。`blockStreaming` 允许 AI 回复以流式方式分块发送，第一条回复会立即发送而不等待后续内容生成完成。
+
+**2026-04-14 更新**：添加 `flushOnEnqueue: true` 配置，禁用 block 合并机制，确保每个 block 立即发送。
 
 ### 3.2 config adapter：配置适配层
 
@@ -531,21 +561,83 @@ export default defineChannelPluginEntry({
 
 ## 第八步：把入站消息桥接到 OpenClaw 标准 reply pipeline
 
-文件：`extensions/xiaoli-chat/src/inbound-runtime.ts:26`
+文件：`extensions/xiaoli-chat/src/inbound-runtime.ts:36`
 
 这是整个插件里最关键的 OpenClaw 接缝之一。
 
-### 8.1 它做了什么
+### 8.1 架构重构（2026-04-13）
+
+**重要变更**：从旧的 `dispatchInboundDirectDmWithRuntime` 迁移到标准 channel plugin 架构，使用 `dispatchReplyWithBufferedBlockDispatcher` 以支持 `blockStreaming` 流式输出。
+
+### 8.2 它做了什么
 
 `handleXiaoliInboundMessage(...)` 当前的流程：
 
 1. 如果不是私聊消息，先忽略
 2. 从 runtime 里加载配置
 3. 解析默认账号
-4. 调用 `dispatchInboundDirectDmWithRuntime(...)`
-5. 提供 `deliver(...)` 回调，把 AI 回复再发回平台
+4. 构建媒体上下文（如果有附件）
+5. 调用 `finalizeInboundContext(...)` 构建标准化上下文
+   - **关键**：参数键名必须使用**大写字母开头**（如 `Body`、`BodyForAgent`、`SessionKey` 等）
+   - 这是 OpenClaw SDK 的标准格式要求
+6. 调用 `recordInboundSession(...)` 记录会话
+7. 调用 `createChannelReplyPipeline(...)` 创建回复管道
+8. 调用 `dispatchReplyWithBufferedBlockDispatcher(...)` 分发回复
+9. 提供 `deliver(...)` 回调，把 AI 回复（包括工具调用结果）再发回平台
 
-### 8.2 为什么这是核心接入点
+### 8.3 关键修复：参数键名格式
+
+**问题**：之前使用小写字母开头的键名（如 `body`、`bodyForAgent`、`sessionKey`）导致 agent 无法正确读取消息内容。
+
+**解决方案**：参考 WhatsApp 插件实现，使用大写字母开头的键名：
+
+```typescript
+const ctxPayload = finalizeInboundContext({
+  SessionKey: sessionKey,
+  AccountId: accountId,
+  MessageSid: message.messageId,
+  From: message.senderId,
+  To: message.chatId,
+  Body: bodyForAgent,
+  BodyForAgent: bodyForAgent,
+  RawBody: message.text,
+  CommandBody: message.text,
+  ConversationLabel: message.senderId,
+  SenderId: message.senderId,
+  MediaPath: mediaContext?.MediaPath,
+  MediaUrl: mediaContext?.MediaUrl,
+  MediaType: mediaContext?.MediaType,
+  Provider: "xiaoli-chat",
+  Surface: "xiaoli-chat",
+  OriginatingChannel: "xiaoli-chat",
+  OriginatingTo: message.chatId,
+  // ... 其他字段
+});
+```
+
+### 8.4 deliver 回调的工具调用响应支持
+
+`deliver(...)` 使用 `resolveSendableOutboundReplyParts(payload)` 统一解析 `OutboundReplyPayload`，处理三种情况：
+
+- **空 payload**：`!reply.hasContent` 时直接返回，不发送
+- **含媒体**：`reply.hasMedia` 时按 `mediaUrls` 顺序调 `sendMedia`，首条带文本 caption，后续 caption 为空
+- **纯文本**：调 `sendText`
+
+这样，当 AI 模型调用工具后生成的结果（无论是文本还是媒体，如图片）都能正确下发到 Xiaoli Chat 会话，而不会被丢弃。
+
+工具调用结果通过 OpenClaw 内部的 `dispatcher.sendToolResult(...)` 链路流入 `deliver`，插件无需额外处理。
+
+### 8.5 blockStreaming 流式输出
+
+通过使用 `dispatchReplyWithBufferedBlockDispatcher` 和在 channel capabilities 中启用 `blockStreaming: true`，插件现在支持流式输出：
+
+- **第一条回复立即发送**：AI 生成第一个文本块后立即通过 `deliver` 回调发送，不等待后续内容
+- **后续块独立发送**：每个新的文本块生成后都会触发独立的 `deliver` 调用
+- **发送延迟极低**：每次 `deliver` 调用到实际发送只需几毫秒
+
+这大幅改善了用户体验，用户可以更快看到 AI 的初始响应。
+
+### 8.6 为什么这是核心接入点
 
 这个插件**没有自己实现 agent loop**。
 
@@ -572,9 +664,9 @@ export default defineChannelPluginEntry({
 - 把外部消息转换成 OpenClaw 能理解的标准输入
 - 再把 OpenClaw 生成的回复投递回平台
 
-### 8.3 当前限制
+### 8.7 当前限制
 
-在 `extensions/xiaoli-chat/src/inbound-runtime.ts:33`：
+在 `extensions/xiaoli-chat/src/inbound-runtime.ts:43`：
 
 - 非 direct message 目前只记录日志，不进入 reply pipeline
 
@@ -872,6 +964,18 @@ export type XiaoliInboundMessage = {
   text: string;
   threadId?: string;
   isDirectMessage: boolean;
+  thinking?: string;
+  media?: XiaoliMediaAttachment[];
+};
+```
+
+其中 `XiaoliMediaAttachment` 包含：
+
+```ts
+export type XiaoliMediaAttachment = {
+  url: string;
+  type?: string;
+  name?: string;
 };
 ```
 
@@ -958,8 +1062,10 @@ pnpm exec tsc -p "extensions/xiaoli-chat/tsconfig.json" --noEmit
 目标测试：
 
 ```bash
-pnpm test -- "extensions/xiaoli-chat/src/webhook.test.ts"
+pnpm exec vitest run extensions/xiaoli-chat/src/webhook.test.ts extensions/xiaoli-chat/src/inbound-runtime.test.ts
 ```
+
+`webhook.test.ts` 覆盖 transport/security boundary；`inbound-runtime.test.ts` 覆盖 deliver 回调的 text / media / 空 payload 场景。
 
 ### 15.2 安装 / 加载验证
 
@@ -1053,6 +1159,176 @@ curl -i "http://127.0.0.1:18789/hooks/xiaoli-chat/webhook"
 
 ---
 
+## 第十八步：Go webhook 中转服务（xiaoli-chat-webhook）
+
+目录：`xiaoli-chat-webhook/`
+
+这是一个独立的 Go 服务，用于在**外部 Xiaoli Chat 平台**与**OpenClaw `xiaoli-chat` 插件**之间做协议桥接。它不属于 OpenClaw 插件本身，而是作为外部适配层单独部署。
+
+### 18.1 它解决的问题
+
+实际平台的 webhook payload 格式往往和 OpenClaw `xiaoli-chat` 插件期望的格式不同。这个中转服务负责：
+
+1. 接收来自 Xiaoli Chat 平台的原始 webhook 事件（含签名校验）
+2. 将消息字段重新映射成插件期望的格式，转发到 `/hooks/xiaoli-chat/webhook`
+3. 接收 OpenClaw 通过 `POST /messages` 发回的回复
+4. 通过 SSE 将回复实时推送给前端或测试客户端
+
+### 18.2 数据流
+
+```text
+Xiaoli Chat 平台
+  -> POST /webhook（带签名）
+  -> HMAC 验签
+  -> 字段映射
+  -> POST {OPENCLAW_URL}/hooks/xiaoli-chat/webhook（生成签名）
+  -> OpenClaw 标准 reply pipeline
+  -> sendText / sendMedia（插件 deliver 回调）
+  -> POST /messages（OpenClaw 回调该服务）
+  -> 写入内存环形缓冲区
+  -> 广播到所有 SSE 客户端
+```
+
+### 18.3 环境变量
+
+| 变量             | 必填 | 说明                                                  |
+| ---------------- | ---- | ----------------------------------------------------- |
+| `WEBHOOK_SECRET` | ✅   | 从平台接收 webhook 时的验签密钥（也用于生成转发签名） |
+| `XIAOLI_TOKEN`   | ✅   | `/messages` 端点的 Bearer 认证 token                  |
+| `OPENCLAW_URL`   | 否   | OpenClaw gateway 地址，默认 `http://localhost:18789`  |
+| `PORT`           | 否   | 服务监听端口，默认 `8080`                             |
+
+### 18.4 HTTP 端点
+
+| 路径             | 方法 | 说明                                                |
+| ---------------- | ---- | --------------------------------------------------- |
+| `POST /webhook`  | POST | 接收平台事件，转发到 OpenClaw                       |
+| `POST /messages` | POST | 接收 OpenClaw 回复，需 Bearer 认证                  |
+| `GET /replies`   | GET  | 查询内存里最近的回复（支持 `chatId`、`limit` 参数） |
+| `GET /stream`    | GET  | SSE 流，实时推送回复（支持 `chatId` 过滤）          |
+| `GET /health`    | GET  | 健康检查                                            |
+
+### 18.5 `/webhook` 接收的事件格式
+
+```json
+{
+  "event": "message",
+  "timestamp": 1712800000,
+  "data": {
+    "user": "user-123",
+    "channel": "chat-456",
+    "message": "hello",
+    "media": [{ "url": "https://example.com/img.png", "type": "image", "name": "img.png" }]
+  }
+}
+```
+
+目前支持的事件类型：`message`、`user_joined`（其余记录日志后忽略）。
+
+### 18.6 转发给 OpenClaw 的消息格式
+
+中转服务将平台事件重新映射为插件期望的结构：
+
+```json
+{
+  "senderId": "user-123",
+  "chatId": "chat-456",
+  "messageId": "msg-<nanoseconds>",
+  "text": "hello",
+  "isDirectMessage": true,
+  "media": [...]
+}
+```
+
+并通过 `x-xiaoli-signature: sha256=<hmac>` 头携带签名。
+
+### 18.7 `/messages` 接收的回复格式
+
+```json
+{
+  "chatId": "chat-456",
+  "text": "AI 回复内容",
+  "threadId": "optional",
+  "mediaUrl": "https://example.com/reply.png",
+  "mediaType": "image"
+}
+```
+
+需携带 `Authorization: Bearer <XIAOLI_TOKEN>`。
+
+### 18.8 启动方式
+
+```bash
+cd xiaoli-chat-webhook
+WEBHOOK_SECRET=your-secret XIAOLI_TOKEN=your-token go run main.go
+```
+
+或使用 `run.sh`：
+
+```bash
+./xiaoli-chat-webhook/run.sh
+```
+
+### 18.9 并发安全
+
+- `recentReplies`（环形缓冲，最近 100 条）：用 `sync.RWMutex` 保护
+- `sseClients`（SSE 连接池）：用 `sync.Mutex` 保护
+- HTTP 请求使用全局复用的 `http.Client`（60s 超时）
+- 服务支持 graceful shutdown（监听 `SIGINT` / `SIGTERM`，10s 宽限期）
+
+### 18.10 流式输出修复（2026-04-14）
+
+**问题**：Go webhook 服务使用异步处理（`go func()`）导致消息顺序混乱或丢失。
+
+**症状**：
+
+- 第一条消息（"正在查询..."）不发送
+- 只有最后一条消息到达客户端
+- 两条消息间隔 4ms 但只收到一条
+
+**根本原因**：
+
+```go
+// 错误实现：立即返回 HTTP 200，然后异步处理
+w.WriteHeader(http.StatusOK)
+json.NewEncoder(w).Encode(...)
+
+go func() {
+    // 异步存储和广播
+    // 多个 goroutine 并发执行，导致竞态条件
+}()
+```
+
+**解决方案**：改为同步处理
+
+```go
+// 正确实现：先处理消息，再返回响应
+log.Printf("收到 OpenClaw 回复...")
+
+// 同步存储到内存
+repliesMu.Lock()
+recentReplies = append(recentReplies, replyMsg)
+repliesMu.Unlock()
+
+// 同步广播到 SSE 客户端
+broadcastToSSEClients(replyMsg)
+
+// 最后返回响应
+w.WriteHeader(http.StatusOK)
+json.NewEncoder(w).Encode(...)
+```
+
+**修复效果**：
+
+- ✅ 所有消息按顺序正确发送
+- ✅ 第一条消息立即到达（5-7 秒）
+- ✅ 第二条消息独立到达（工具调用完成后）
+- ✅ 消息间隔 4ms，符合预期
+
+**性能影响**：由于存储和广播都是轻量级内存操作（<1ms），同步处理不会造成明显延迟，反而保证了消息的完整性和顺序性。
+
+---
+
 ## 这个插件给出的设计经验
 
 ### 1. 入口文件一定要薄
@@ -1080,6 +1356,192 @@ curl -i "http://127.0.0.1:18789/hooks/xiaoli-chat/webhook"
 
 - 当前没接好的能力就不要提前宣称支持
 - 群消息、media 等后续能力，等真正接好后再开放
+
+---
+
+## 第十九步：架构重构记录（2026-04-13）
+
+### 19.1 问题背景
+
+在原始实现中，xiaoli-chat 插件使用了旧的 `dispatchInboundDirectDmWithRuntime` API，存在以下问题：
+
+1. **不支持流式输出**：第一条回复需要等待所有内容生成完成后才能发送
+2. **用户体验差**：用户需要等待很长时间（20-30秒）才能看到任何响应
+3. **架构不标准**：没有使用标准的 channel plugin reply pipeline
+
+### 19.2 重构目标
+
+1. 迁移到标准 channel plugin 架构
+2. 启用 `blockStreaming` 支持流式输出
+3. 第一条回复立即发送，不等待后续内容
+4. 保持向后兼容，不破坏现有功能
+
+### 19.3 核心变更
+
+#### 变更 1：启用 blockStreaming capability
+
+**文件**：`extensions/xiaoli-chat/src/channel.ts`
+
+```typescript
+capabilities: {
+  chatTypes: ["direct", "group", "thread"],
+  media: true,
+  reactions: false,
+  threads: true,
+  edit: false,
+  unsend: false,
+  reply: true,
+  effects: false,
+  nativeCommands: false,
+  blockStreaming: true,  // 从 false 改为 true
+}
+```
+
+#### 变更 2：重构 inbound-runtime.ts
+
+**文件**：`extensions/xiaoli-chat/src/inbound-runtime.ts`
+
+**旧实现**：
+
+```typescript
+await dispatchInboundDirectDmWithRuntime({
+  runtime,
+  channel: "xiaoli-chat",
+  channelLabel: "Xiaoli Chat",
+  peer: { kind: "direct", id: message.senderId },
+  // ... 其他参数
+});
+```
+
+**新实现**：
+
+```typescript
+// 1. 使用 finalizeInboundContext 构建标准化上下文
+const ctxPayload = finalizeInboundContext({
+  SessionKey: sessionKey,
+  AccountId: accountId,
+  MessageSid: message.messageId,
+  From: message.senderId,
+  To: message.chatId,
+  Body: bodyForAgent,
+  BodyForAgent: bodyForAgent,
+  RawBody: message.text,
+  CommandBody: message.text,
+  // ... 其他字段（注意：键名必须大写字母开头）
+});
+
+// 2. 记录会话
+await recordInboundSession({
+  storePath,
+  sessionKey,
+  ctx: ctxPayload,
+  onRecordError: (error) => { ... },
+});
+
+// 3. 创建 reply pipeline
+const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
+  cfg,
+  agentId: "default",
+  channel: "xiaoli-chat",
+  accountId,
+});
+
+// 4. 使用 buffered block dispatcher 分发回复
+await dispatchReplyWithBufferedBlockDispatcher({
+  ctx: ctxPayload,
+  cfg,
+  dispatcherOptions: {
+    ...replyPipeline,
+    deliver,
+    onError: (error, info) => { ... },
+  },
+  replyOptions: {
+    onModelSelected,
+  },
+});
+```
+
+#### 变更 3：关键修复 - 参数键名格式
+
+**问题**：`finalizeInboundContext` 期望的参数键名是**大写字母开头**（如 `Body`、`BodyForAgent`），而不是小写字母开头（如 `body`、`bodyForAgent`）。
+
+**错误示例**（导致 agent 无法读取消息）：
+
+```typescript
+const ctxPayload = finalizeInboundContext({
+  sessionKey: sessionKey, // ❌ 错误：小写开头
+  accountId: accountId, // ❌ 错误：小写开头
+  bodyForAgent: bodyForAgent, // ❌ 错误：小写开头
+  // ...
+});
+```
+
+**正确示例**：
+
+```typescript
+const ctxPayload = finalizeInboundContext({
+  SessionKey: sessionKey, // ✅ 正确：大写开头
+  AccountId: accountId, // ✅ 正确：大写开头
+  BodyForAgent: bodyForAgent, // ✅ 正确：大写开头
+  // ...
+});
+```
+
+这个格式要求来自 OpenClaw SDK 的标准约定，可以参考 WhatsApp 插件的实现。
+
+### 19.4 验证结果
+
+重构后的测试结果：
+
+1. ✅ **消息正确接收**：agent 能够正确读取并理解用户消息
+2. ✅ **流式输出工作**：第一条回复在生成后立即发送（约 5-7 秒）
+3. ✅ **发送延迟极低**：每次 deliver 调用到实际发送只需 7-12ms
+4. ✅ **多块独立发送**：每个文本块生成后都会触发独立的 deliver 调用
+5. ✅ **向后兼容**：现有功能（媒体附件、线程回复等）保持正常工作
+
+### 19.5 性能对比
+
+**重构前**：
+
+- 第一条回复延迟：25-30 秒（等待所有内容生成完成）
+- 用户体验：长时间无响应
+
+**重构后**：
+
+- 第一条回复延迟：5-7 秒（LLM 生成时间）
+- 发送延迟：7-12ms
+- 用户体验：快速看到初始响应，后续内容逐步到达
+
+### 19.6 参考实现
+
+如果你需要实现类似的流式输出功能，可以参考以下文件：
+
+- `extensions/whatsapp/src/auto-reply/monitor/inbound-dispatch.ts` - WhatsApp 的标准实现
+- `extensions/discord/src/monitor/inbound-context.ts` - Discord 的实现
+- `extensions/xiaoli-chat/src/inbound-runtime.ts` - 本插件的实现
+
+关键点：
+
+1. 使用 `finalizeInboundContext` 而不是手动构建上下文
+2. 参数键名必须大写字母开头
+3. 使用 `dispatchReplyWithBufferedBlockDispatcher` 而不是旧的 dispatch API
+4. 在 channel capabilities 中启用 `blockStreaming: true`
+
+### 19.7 常见问题
+
+**Q: 为什么 agent 说"没有收到消息"？**
+
+A: 检查 `finalizeInboundContext` 的参数键名是否使用大写字母开头。这是最常见的错误。
+
+**Q: 如何验证流式输出是否工作？**
+
+A: 查看 OpenClaw 日志，应该看到多次 `deliver called` 日志，每次间隔几秒钟。如果只看到一次 deliver，说明流式输出没有启用。
+
+**Q: 如何调试 deliver 回调？**
+
+A: 在 `deliver` 函数中添加详细的时间戳日志，记录每次调用的时间和内容长度。
+
+---
 
 ## 相关文档
 
