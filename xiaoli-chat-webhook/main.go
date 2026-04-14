@@ -42,12 +42,14 @@ type MediaAttachment struct {
 
 // ReplyMessage 存储回复消息
 type ReplyMessage struct {
-	ChatID    string    `json:"chatId"`
-	Text      string    `json:"text"`
-	ThreadID  string    `json:"threadId,omitempty"`
-	MediaURL  string    `json:"mediaUrl,omitempty"`
-	MediaType string    `json:"mediaType,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	ID        string `json:"id"`
+	ChatID    string `json:"chatId"`
+	Text      string `json:"text"`
+	ThreadID  string `json:"threadId,omitempty"`
+	MediaURL  string `json:"mediaUrl,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	IsFinal   bool   `json:"isFinal,omitempty"`   // 是否是最后一条消息
+	Timestamp int64  `json:"timestamp"` // 毫秒时间戳
 }
 
 // SSEClient SSE 客户端连接
@@ -264,6 +266,35 @@ func forwardToOpenClaw(channel, user, message string, media []MediaAttachment) e
 	}
 
 	log.Printf("消息已转发到 OpenClaw: status=%d, response=%s", resp.StatusCode, string(body))
+
+	// OpenClaw 返回 202 表示接受请求，但流式消息可能还在异步发送
+	// 等待一小段时间让所有流式消息通过 SSE 到达，然后发送完成信号
+	go func() {
+		time.Sleep(200 * time.Millisecond) // 等待 200ms 让流式消息到达
+
+		// 发送一个带有 isFinal: true 的合成消息，标记响应完成
+		finalMsg := ReplyMessage{
+			ID:        fmt.Sprintf("final-%d", time.Now().UnixNano()),
+			ChatID:    channel,
+			Text:      "", // 空文本，仅用于标记完成
+			IsFinal:   true,
+			Timestamp: time.Now().UnixMilli(),
+		}
+
+		// 存储到内存
+		repliesMu.Lock()
+		recentReplies = append(recentReplies, finalMsg)
+		if len(recentReplies) > 100 {
+			recentReplies = recentReplies[1:]
+		}
+		repliesMu.Unlock()
+
+		// 广播到所有 SSE 客户端
+		broadcastToSSEClients(finalMsg)
+
+		log.Printf("已发送响应完成信号: chatId=%s", channel)
+	}()
+
 	return nil
 }
 
@@ -445,6 +476,7 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		ThreadID  string `json:"threadId,omitempty"`
 		MediaURL  string `json:"mediaUrl,omitempty"`
 		MediaType string `json:"mediaType,omitempty"`
+		IsFinal   bool   `json:"isFinal,omitempty"` // 是否是最后一条消息
 	}
 
 	if err := json.Unmarshal(body, &reply); err != nil {
@@ -460,12 +492,14 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// 创建回复消息
 	replyMsg := ReplyMessage{
+		ID:        messageID,
 		ChatID:    reply.ChatID,
 		Text:      reply.Text,
 		ThreadID:  reply.ThreadID,
 		MediaURL:  reply.MediaURL,
 		MediaType: reply.MediaType,
-		Timestamp: time.Now(),
+		IsFinal:   reply.IsFinal,
+		Timestamp: time.Now().UnixMilli(), // 毫秒时间戳
 	}
 
 	// 存储回复到内存

@@ -137,6 +137,50 @@ curl -X POST http://localhost:8080/webhook \
 }
 ```
 
+### GET /stream
+
+**SSE（Server-Sent Events）实时推送端点**
+
+实时接收 OpenClaw 回复消息，支持多条消息流式推送。
+
+**查询参数：**
+
+- `chatId`: 频道 ID（必填）
+
+**示例：**
+
+```bash
+curl -N http://localhost:8080/sse?chatId=xiaoli-chat
+```
+
+**响应格式（SSE 流）：**
+
+```
+data: {"id":"reply-1776148808518524494","text":"好的,我来查询天气。","chatId":"xiaoli-chat","timestamp":1776148808518}
+
+data: {"id":"reply-1776148819508328164","text":"⛅ 多云,24°C","chatId":"xiaoli-chat","timestamp":1776148819508}
+```
+
+**字段说明：**
+
+- `id`: 消息唯一 ID（纳秒时间戳）
+- `text`: 回复文本内容
+- `chatId`: 频道 ID
+- `timestamp`: 消息时间戳（毫秒）
+
+**使用场景：**
+
+- ROS2 Bridge 实时接收 OpenClaw 回复
+- Web 前端实时显示对话
+- 监控和调试工具
+
+**特性：**
+
+- ✅ 持久连接，自动重连
+- ✅ 实时推送，延迟 < 100ms
+- ✅ 支持多客户端同时连接
+- ✅ 自动过滤频道消息
+
 ### POST /messages
 
 接收来自 OpenClaw 的回复。
@@ -167,6 +211,13 @@ curl -X POST http://localhost:8080/webhook \
   "id": "message-id"
 }
 ```
+
+**处理流程：**
+
+1. 接收 OpenClaw 回复
+2. 存储到内存（`recentReplies`）
+3. 通过 SSE 实时推送给所有连接的客户端
+4. 返回消息 ID
 
 ## 签名验证
 
@@ -267,19 +318,102 @@ openclaw gateway restart
 
 ### 流式输出问题（已修复 2026-04-14）
 
-**症状**：只收到最后一条消息，第一条消息丢失。
+**症状 1**：只收到最后一条消息，第一条消息丢失。
 
 **原因**：之前使用异步处理（`go func()`）导致消息竞态条件。
 
 **解决方案**：已改为同步处理消息存储和广播，确保所有消息按顺序完整到达。
 
+**症状 2**：SSE 连接成功但收到的消息 `text` 字段为空。
+
+**原因**：OpenClaw xiaoli-chat 插件配置 `idleMs: 0` 导致流式输出缓冲区永远不会 flush（当 `idleMs <= 0` 时，调度器会跳过 flush）。
+
+**解决方案**：将 `idleMs` 改为 `1`（1毫秒），接近立即发送但仍会触发 flush 逻辑。
+
+**症状 3**：Python ROS2 Bridge 收到 SSE 数据但无法解析（缺少 `id` 字段）。
+
+**原因**：Go Webhook 的 `ReplyMessage` 结构体缺少 `id` 字段，导致 Python 无法正确处理消息。
+
+**解决方案**：
+
+1. 在 `ReplyMessage` 结构体中添加 `ID` 字段（JSON 标签为 `id`）
+2. 将 `Timestamp` 从 `time.Time` 改为 `int64`（毫秒时间戳）
+3. 在 `handleMessages` 中填充 `ID` 和 `Timestamp` 字段
+
+**症状 4**：消息延迟 15-20 秒，所有消息在 POST 完成后才批量上报。
+
+**原因**：Python ROS2 Bridge 等待 POST 请求完成后才从队列消费消息，导致消息积压。
+
+**解决方案**：
+
+1. 在 `_handle_sse_message` 中实现立即上报机制
+2. 使用请求上下文（`_current_event_id`、`_current_device_id`）追踪当前请求
+3. SSE 消息到达时，如果有活跃请求上下文，立即调用 `_send_response` 上报
+4. 在 `_handle_request` 中使用 try-finally 确保上下文清理
+
+**症状 5**：重复消息发送。
+
+**原因**：可能的原因包括 SSE 重连、多客户端连接、或消息 ID 去重失效。
+
+**解决方案**：
+
+1. 增强日志记录，显示所有重复消息的 ID 和内容
+2. 添加 `_max_processed_ids` 限制（1000 条），防止内存泄漏
+3. 当记录数超过上限时，自动清理最旧的一半记录
+4. 在 `/clear` 信号时清空已处理消息记录
+
 **验证方法**：
 
 1. 发送需要工具调用的消息（如"查询天气"）
 2. 应该收到两条独立的消息：
-   - 第一条："正在查询..."（5-7 秒后到达）
-   - 第二条：查询结果（20-30 秒后到达）
+   - 第一条：工具调用提示（立即到达，<100ms）
+   - 第二条：查询结果（立即到达，<100ms）
 3. 消息间隔应该是 4-9ms（LLM 生成间隔）
+4. 每条消息的 `text` 字段都应该有内容
+5. Python 日志应显示：
+   ```
+   SSE 接收到数据: {"id":"reply-...","chatId":"xiaoli-chat","text":"...","timestamp":...}
+   SSE 收到新消息: id=reply-..., text=...
+   [event_id] SSE 消息立即上报: ...
+   device_msg_response 发送成功
+   ```
+6. 如果有重复消息，日志会显示：
+   ```
+   跳过重复消息: id=reply-..., text=...
+   ```
+
+### SSE 连接问题
+
+**症状**：ROS2 Bridge 无法连接 SSE
+
+**解决方案**：
+
+1. 检查服务器日志，确认 SSE 端点正常运行
+2. 测试 SSE 连接：
+   ```bash
+   curl -N http://localhost:8080/sse?chatId=xiaoli-chat
+   ```
+3. 检查防火墙设置
+4. 确认 `chatId` 参数正确
+
+**症状**：SSE 消息重复
+
+**解决方案**：
+
+1. 检查客户端是否正确去重（使用消息 ID）
+2. 确认没有多个客户端连接同一个 chatId
+3. 查看服务器日志中的 "广播回复到 N 个 SSE 客户端"
+
+### 消息延迟
+
+**症状**：消息延迟超过 1 秒
+
+**排查步骤**：
+
+1. 检查 Go Webhook 日志，确认接收时间
+2. 检查 SSE 推送时间（应该 < 10ms）
+3. 检查 ROS2 Bridge 日志，确认队列处理时间
+4. 检查网络延迟：`ping localhost`
 
 ## 性能优化
 

@@ -62,7 +62,7 @@ export const xiaoliChatPlugin = createChatChannelPlugin<ResolvedXiaoliAccount>({
     streaming: {
       blockStreamingCoalesceDefaults: {
         minChars: 1,
-        idleMs: 0, // 立即发送，不等待合并
+        idleMs: 1, // 1ms 空闲时间，接近立即发送
       },
     },
     config: {
