@@ -22,11 +22,29 @@ mkdir -p "${SCRIPT_DIR}/dist/src"
 
 cd "${SCRIPT_DIR}"
 
-# 检查 esbuild
-if ! command -v "${REPO_ROOT}/node_modules/.bin/esbuild" &> /dev/null; then
+# 检查 esbuild（优先使用全局，然后使用本地）
+ESBUILD_CMD=""
+if command -v esbuild &> /dev/null; then
+    ESBUILD_CMD="esbuild"
+    echo "使用全局 esbuild: $(which esbuild)"
+elif command -v "${REPO_ROOT}/node_modules/.bin/esbuild" &> /dev/null; then
+    ESBUILD_CMD="${REPO_ROOT}/node_modules/.bin/esbuild"
+    echo "使用本地 esbuild: ${ESBUILD_CMD}"
+else
     echo "Error: esbuild not found"
-    echo "Please run: cd ${REPO_ROOT} && pnpm install"
+    echo "Please install esbuild globally: npm install -g esbuild"
+    echo "Or install locally: cd ${REPO_ROOT} && pnpm install"
     exit 1
+fi
+
+# 检查 tsc（优先使用全局，然后使用本地）
+TSC_CMD=""
+if command -v tsc &> /dev/null; then
+    TSC_CMD="tsc"
+elif command -v "${REPO_ROOT}/node_modules/.bin/tsc" &> /dev/null; then
+    TSC_CMD="${REPO_ROOT}/node_modules/.bin/tsc"
+else
+    echo "Warning: tsc not found, skipping type declarations"
 fi
 
 if [ "$BUNDLE_MODE" = true ]; then
@@ -35,7 +53,7 @@ if [ "$BUNDLE_MODE" = true ]; then
     # ============================================
     echo "Bundling all code into a single file..."
 
-    "${REPO_ROOT}/node_modules/.bin/esbuild" index.ts \
+    "$ESBUILD_CMD" index.ts \
         --bundle \
         --outfile=dist/index.js \
         --format=esm \
@@ -45,13 +63,17 @@ if [ "$BUNDLE_MODE" = true ]; then
         --tsconfig=tsconfig.build.json \
         --minify=false
 
-    echo "Generating type declarations..."
-    "${REPO_ROOT}/node_modules/.bin/tsc" \
+    if [ -n "$TSC_CMD" ]; then
+        echo "Generating type declarations..."
+        "$TSC_CMD" \
         -p tsconfig.build.json \
         --emitDeclarationOnly \
         --declaration \
         --declarationMap false \
         2>&1 | grep -v "is not under 'rootDir'" | grep -v "File is ECMAScript module" || true
+    else
+        echo "Skipping type declarations (tsc not found)"
+    fi
 
     echo ""
     echo "✓ Bundle complete!"
@@ -71,7 +93,7 @@ else
         if [ -f "$file" ] && [[ ! "$file" =~ \.test\.ts$ ]]; then
             outfile="dist/${file%.ts}.js"
             mkdir -p "$(dirname "$outfile")"
-            "${REPO_ROOT}/node_modules/.bin/esbuild" "$file" \
+            "$ESBUILD_CMD" "$file" \
                 --outfile="$outfile" \
                 --format=esm \
                 --platform=node \
@@ -80,13 +102,17 @@ else
         fi
     done
 
-    echo "Generating type declarations..."
-    "${REPO_ROOT}/node_modules/.bin/tsc" \
+    if [ -n "$TSC_CMD" ]; then
+        echo "Generating type declarations..."
+        "$TSC_CMD" \
         -p tsconfig.build.json \
         --emitDeclarationOnly \
         --declaration \
         --declarationMap false \
         2>&1 | grep -v "is not under 'rootDir'" | grep -v "File is ECMAScript module" || true
+    else
+        echo "Skipping type declarations (tsc not found)"
+    fi
 
     echo ""
     echo "✓ Build complete!"

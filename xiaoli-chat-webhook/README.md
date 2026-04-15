@@ -11,6 +11,15 @@
 - ✅ SSE 实时推送（含媒体字段）
 - ✅ 健康检查端点
 - ✅ 环境变量配置
+- ✅ 多架构支持（x86-64 和 ARM64）
+
+## 多架构支持
+
+服务器支持以下架构：
+- ✅ x86-64 (AMD64)
+- ✅ ARM64 (aarch64)
+
+启动脚本会自动检测系统架构并使用对应的二进制文件。如果二进制文件不存在，会自动编译。
 
 ## 快速开始
 
@@ -27,22 +36,48 @@ cp .env.example .env
 ```bash
 WEBHOOK_SECRET=your-webhook-secret-here  # 与 Xiaoli Chat 配置一致
 OPENCLAW_URL=http://localhost:18789      # OpenClaw Gateway 地址
-OPENCLAW_TOKEN=                          # OpenClaw API Token（可选）
-PORT=8080                                # 服务器监听端口
+XIAOLI_TOKEN=your-xiaoli-token-here      # Xiaoli Chat API Token
+PORT=8088                                # 服务器监听端口
 ```
 
 ### 2. 运行服务器
+
+#### 方式 1：使用启动脚本（推荐）
 
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
-或者手动运行：
+启动脚本会：
+1. 自动检测系统架构（x86-64 或 ARM64）
+2. 选择对应的二进制文件
+3. 如果二进制文件不存在，自动编译
+4. 启动服务器
+
+#### 方式 2：手动运行
+
+**ARM64 系统**：
+```bash
+./webhook-server-arm64
+```
+
+**x86-64 系统**：
+```bash
+./webhook-server
+```
+
+#### 方式 3：从源码编译并运行
 
 ```bash
-go build -o webhook-server main.go
-./webhook-server
+# 确保已安装 Go 1.22+
+go version
+
+# 编译
+go build -o webhook-server-$(uname -m) main.go
+
+# 运行
+./webhook-server-$(uname -m)
 ```
 
 ### 3. 测试服务器
@@ -50,7 +85,8 @@ go build -o webhook-server main.go
 健康检查：
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8088/health
+# 输出: {"status":"healthy","time":"2026-04-15T11:28:38+08:00"}
 ```
 
 测试 webhook（需要正确的签名）：
@@ -231,6 +267,37 @@ Xiaoli Chat 需要在请求头中包含 `X-Signature` 字段。
 
 ## 部署建议
 
+### 多架构部署
+
+服务器支持 x86-64 和 ARM64 架构：
+
+**x86-64 系统**：
+```bash
+./webhook-server
+```
+
+**ARM64 系统**：
+```bash
+./webhook-server-arm64
+```
+
+**自动检测（推荐）**：
+```bash
+./run.sh  # 自动检测架构并使用对应二进制
+```
+
+**从源码编译**：
+```bash
+# 编译当前架构
+go build -o webhook-server-$(uname -m) main.go
+
+# 交叉编译（在 x86-64 上编译 ARM64）
+GOOS=linux GOARCH=arm64 go build -o webhook-server-arm64 main.go
+
+# 交叉编译（在 ARM64 上编译 x86-64）
+GOOS=linux GOARCH=amd64 go build -o webhook-server main.go
+```
+
 ### 使用 systemd
 
 创建 `/etc/systemd/system/xiaoli-webhook.service`：
@@ -242,10 +309,13 @@ After=network.target
 
 [Service]
 Type=simple
-User=xuhui
-WorkingDirectory=/home/xuhui/xiaoli-chat-webhook
-EnvironmentFile=/home/xuhui/xiaoli-chat-webhook/.env
-ExecStart=/home/xuhui/xiaoli-chat-webhook/webhook-server
+User=root
+WorkingDirectory=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook
+EnvironmentFile=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/.env
+# 根据系统架构选择对应的二进制文件
+# ARM64: webhook-server-arm64
+# x86-64: webhook-server
+ExecStart=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/webhook-server-arm64
 Restart=always
 
 [Install]
@@ -304,6 +374,64 @@ openclaw gateway restart
 
 ## 故障排查
 
+### 架构相关问题
+
+**问题：cannot execute binary file: Exec format error**
+
+这表示二进制文件的架构与系统不匹配。
+
+```bash
+# 检查系统架构
+uname -m
+# 输出: aarch64 (ARM64) 或 x86_64 (x86-64)
+
+# 检查二进制文件架构
+file webhook-server
+file webhook-server-arm64
+
+# 解决方案 1：使用正确的二进制文件
+# ARM64 系统使用:
+./webhook-server-arm64
+
+# x86-64 系统使用:
+./webhook-server
+
+# 解决方案 2：使用自动检测脚本
+./run.sh
+
+# 解决方案 3：重新编译
+go build -o webhook-server-$(uname -m) main.go
+```
+
+**问题：Go 未安装**
+
+```bash
+# 检查 Go 是否安装
+go version
+
+# 安装 Go（ARM64）
+wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+
+# 安装 Go（x86-64）
+wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+**问题：端口被占用**
+
+```bash
+# 检查端口占用
+ss -ltnp | grep 8088
+
+# 杀死占用进程
+pkill -f webhook-server
+
+# 或修改 .env 中的 PORT
+```
+
 ### 签名验证失败
 
 确保 `WEBHOOK_SECRET` 与 Xiaoli Chat 配置完全一致。
@@ -353,31 +481,60 @@ openclaw gateway restart
 
 **症状 5**：重复消息发送。
 
-**原因**：可能的原因包括 SSE 重连、多客户端连接、或消息 ID 去重失效。
+**原因**：消息被立即上报后，又被放入队列再次上报。
 
 **解决方案**：
 
-1. 增强日志记录，显示所有重复消息的 ID 和内容
-2. 添加 `_max_processed_ids` 限制（1000 条），防止内存泄漏
-3. 当记录数超过上限时，自动清理最旧的一半记录
-4. 在 `/clear` 信号时清空已处理消息记录
+1. 消息立即上报后，不再放入队列
+2. 只有在没有活跃请求上下文时，才将消息放入队列（兼容旧逻辑）
+3. 增强日志记录，显示所有重复消息的 ID 和内容
+4. 添加 `_max_processed_ids` 限制（1000 条），防止内存泄漏
+5. 当记录数超过上限时，自动清理最旧的一半记录
+6. 在 `/clear` 信号时清空已处理消息记录
+
+**症状 6**：无法检测响应完成，不知道何时是最后一条消息。
+
+**原因**：OpenClaw 发送多条消息时（如工具调用），消息间隔可能很长（7+ 秒），无法用固定超时判断完成。
+
+**解决方案**：
+
+1. **Go Webhook 端**：
+   - 监控 OpenClaw POST 请求完成（收到 202 响应）
+   - 等待 200ms 让流式消息通过 SSE 到达
+   - 发送一个空文本 + `isFinal: true` 的合成消息作为完成信号
+   - 通过 SSE 广播给所有客户端
+
+2. **Python Bridge 端**：
+   - 识别空文本 + `isFinal: true` 的完成信号
+   - 收到完成信号后，发送一个空消息 + `stopReason: "stop"` 给平台
+   - 设置 `_response_complete = True` 结束等待
+   - 中间消息不带 `stopReason`，只有最后一条才带
+
+3. **消息格式**：
+   - 中间消息：有文本内容，无 `stopReason` 字段
+   - 最终消息：空文本，带 `stopReason: "stop"`
 
 **验证方法**：
 
 1. 发送需要工具调用的消息（如"查询天气"）
-2. 应该收到两条独立的消息：
+2. 应该收到多条独立的消息：
    - 第一条：工具调用提示（立即到达，<100ms）
    - 第二条：查询结果（立即到达，<100ms）
-3. 消息间隔应该是 4-9ms（LLM 生成间隔）
-4. 每条消息的 `text` 字段都应该有内容
-5. Python 日志应显示：
+   - 最后：完成信号（空消息 + `stopReason: "stop"`）
+3. 消息间隔应该是 4-9ms（LLM 生成间隔）或更长（工具调用时可能 7+ 秒）
+4. 每条消息的 `text` 字段都应该有内容（除了最后的完成信号）
+5. 只有最后一条消息带 `stopReason: "stop"`
+6. Python 日志应显示：
    ```
    SSE 接收到数据: {"id":"reply-...","chatId":"xiaoli-chat","text":"...","timestamp":...}
    SSE 收到新消息: id=reply-..., text=...
    [event_id] SSE 消息立即上报: ...
    device_msg_response 发送成功
+   SSE 收到响应完成信号: id=final-...
+   [event_id] 收到响应完成信号（isFinal=true）
+   [event_id] SSE 回复完成（收到 isFinal=true）
    ```
-6. 如果有重复消息，日志会显示：
+7. 如果有重复消息，日志会显示：
    ```
    跳过重复消息: id=reply-..., text=...
    ```

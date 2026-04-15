@@ -92,7 +92,7 @@ func main() {
 	mux.HandleFunc("/webhook", handleWebhook)
 	mux.HandleFunc("/messages", handleMessages)
 	mux.HandleFunc("/replies", handleGetReplies)
-	mux.HandleFunc("/stream", handleSSEStream)
+	mux.HandleFunc("/sse", handleSSEStream)
 	mux.HandleFunc("/health", handleHealth)
 
 	server := &http.Server{
