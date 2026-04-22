@@ -6,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/reply-payload";
 import { resolveXiaoliAccount } from "./config.js";
 import { sendMedia, sendText } from "./outbound.js";
+import { registerChatSession } from "./stop.js";
 import type { XiaoliInboundMessage, XiaoliMediaAttachment } from "./types.js";
 
 type XiaoliInboundLogger = {
@@ -47,6 +48,9 @@ export async function handleXiaoliInboundMessage(params: {
   const cfg = runtime.config.loadConfig() as OpenClawConfig;
   const accountId = "default";
   const account = resolveXiaoliAccount(cfg, accountId);
+
+  // 构建 sessionKey 用于会话管理
+  const sessionKey = `xiaoli-chat:${message.chatId}:${message.senderId}`;
 
   const mediaContext = buildMediaContext(message.media);
   const bodyForAgent = message.text.trim()
@@ -110,6 +114,9 @@ export async function handleXiaoliInboundMessage(params: {
       `[xiaoli-chat] [${returnTime}] deliver completed, took ${returnTime - deliverTime}ms`,
     );
   };
+
+  // 注册会话映射
+  registerChatSession(message.chatId, sessionKey);
 
   // Use standard dispatch flow with runtime
   await dispatchInboundDirectDmWithRuntime({

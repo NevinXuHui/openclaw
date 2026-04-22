@@ -27,14 +27,30 @@ ESBUILD_CMD=""
 if command -v esbuild &> /dev/null; then
     ESBUILD_CMD="esbuild"
     echo "使用全局 esbuild: $(which esbuild)"
-elif command -v "${REPO_ROOT}/node_modules/.bin/esbuild" &> /dev/null; then
-    ESBUILD_CMD="${REPO_ROOT}/node_modules/.bin/esbuild"
-    echo "使用本地 esbuild: ${ESBUILD_CMD}"
 else
-    echo "Error: esbuild not found"
-    echo "Please install esbuild globally: npm install -g esbuild"
-    echo "Or install locally: cd ${REPO_ROOT} && pnpm install"
-    exit 1
+    # 检测系统架构并使用对应的 esbuild 二进制文件
+    ARCH=$(uname -m)
+    PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+    # 映射架构名称
+    case "$ARCH" in
+        x86_64) ESBUILD_ARCH="x64" ;;
+        aarch64|arm64) ESBUILD_ARCH="arm64" ;;
+        armv7l) ESBUILD_ARCH="arm" ;;
+        *) ESBUILD_ARCH="$ARCH" ;;
+    esac
+
+    ESBUILD_BIN="${REPO_ROOT}/node_modules/@esbuild/${PLATFORM}-${ESBUILD_ARCH}/bin/esbuild"
+
+    if [ -f "$ESBUILD_BIN" ]; then
+        ESBUILD_CMD="$ESBUILD_BIN"
+        echo "使用本地 esbuild (${PLATFORM}-${ESBUILD_ARCH}): ${ESBUILD_BIN}"
+    else
+        echo "Error: esbuild not found for ${PLATFORM}-${ESBUILD_ARCH}"
+        echo "Please install esbuild globally: npm install -g esbuild"
+        echo "Or install locally: cd ${REPO_ROOT} && npm install"
+        exit 1
+    fi
 fi
 
 # 检查 tsc（优先使用全局，然后使用本地）
@@ -89,7 +105,7 @@ else
     echo "Compiling TypeScript files..."
 
     # 编译所有 TypeScript 文件（不打包，只转译）
-    for file in index.ts src/*.ts; do
+    for file in index.ts *-api.ts src/*.ts; do
         if [ -f "$file" ] && [[ ! "$file" =~ \.test\.ts$ ]]; then
             outfile="dist/${file%.ts}.js"
             mkdir -p "$(dirname "$outfile")"

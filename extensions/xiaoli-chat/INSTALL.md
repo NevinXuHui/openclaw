@@ -47,7 +47,36 @@
 2. **[2/5] Copying/Installing** - 根据模式复制或直接安装
 3. **[3/5] Installing** - 注册插件到 OpenClaw
 4. **[4/5] Enabling** - 启用插件
-5. **[5/5] Restarting** - 重启 gateway
+5. **[5/5] Configuring** - 自动配置频道和 webhook 服务器
+6. **[6/6] Restarting** - 重启 gateway
+
+## 自动配置
+
+安装脚本会自动完成以下配置:
+
+### OpenClaw 配置
+
+```yaml
+channels:
+  xiaoli-chat:
+    enabled: true
+    token: "test-token-placeholder"
+    baseUrl: "http://localhost:8088"
+    webhookSecret: "<自动生成的64字符密钥>"
+    dmSecurity: "allowlist"
+```
+
+### Webhook 服务器配置
+
+脚本会自动创建 `xiaoli-chat-webhook/.env` 文件:
+
+```bash
+WEBHOOK_SECRET=<与OpenClaw一致的密钥>
+OPENCLAW_URL=http://localhost:18789
+XIAOLI_TOKEN=test-token-placeholder
+OPENCLAW_TOKEN=<自动获取的gateway token>
+PORT=8088
+```
 
 ## 验证安装
 
@@ -57,7 +86,67 @@ openclaw plugins list
 
 # 查看插件详情
 openclaw plugins inspect xiaoli-chat
+
+# 查看频道状态
+openclaw channels status
+
+# 测试 webhook 端点
+curl http://localhost:18789/hooks/xiaoli-chat/webhook
 ```
+
+## 启动 Webhook 服务器
+
+安装完成后,启动 webhook 服务器:
+
+```bash
+cd /mine/Code/ai-tools/openclaw/xiaoli-chat-webhook
+./run.sh
+```
+
+服务器会自动:
+- 检测系统架构 (x86-64 或 ARM64)
+- 选择对应的二进制文件
+- 如果二进制不存在,自动编译
+- 启动服务器监听 8088 端口
+
+## 配置说明
+
+### 必需修改的配置
+
+安装后需要根据实际情况修改以下配置:
+
+1. **Xiaoli Chat API Token**:
+   ```bash
+   openclaw config set channels.xiaoli-chat.token "your-real-token"
+   ```
+
+2. **Webhook 服务器 Token** (编辑 `xiaoli-chat-webhook/.env`):
+   ```bash
+   XIAOLI_TOKEN=your-real-token
+   ```
+
+3. **重启服务**:
+   ```bash
+   openclaw gateway restart
+   cd xiaoli-chat-webhook && ./run.sh
+   ```
+
+### 可选配置
+
+- **Base URL**: 如果 webhook 服务器不在本地,修改:
+  ```bash
+  openclaw config set channels.xiaoli-chat.baseUrl "http://your-server:8088"
+  ```
+
+- **允许的发送者白名单**:
+  ```bash
+  openclaw config set channels.xiaoli-chat.allowFrom '["user1", "user2"]'
+  ```
+
+- **私聊安全策略**:
+  ```bash
+  openclaw config set channels.xiaoli-chat.dmSecurity "open"  # 或 "allowlist"
+  ```
 
 ## 卸载
 
@@ -95,9 +184,81 @@ cd extensions/xiaoli-chat
 ./build.sh
 ```
 
+### Webhook 连接失败
+
+```bash
+# 检查 webhook 端点
+curl http://localhost:18789/hooks/xiaoli-chat/webhook
+
+# 检查 webhook 服务器状态
+cd xiaoli-chat-webhook
+./run.sh
+
+# 查看服务器日志
+```
+
+### 签名验证失败
+
+确保 OpenClaw 和 webhook 服务器的 `webhookSecret` 完全一致:
+
+```bash
+# 查看 OpenClaw 配置
+openclaw config get channels.xiaoli-chat.webhookSecret
+
+# 查看 webhook 服务器配置
+cat xiaoli-chat-webhook/.env | grep WEBHOOK_SECRET
+```
+
 ### 权限问题
 
 ```bash
 # 确保脚本可执行
 chmod +x build.sh install-load.sh
 ```
+
+## 架构说明
+
+```
+┌─────────────────┐
+│  Xiaoli Chat    │
+│   Platform      │
+└────────┬────────┘
+         │ webhook (POST)
+         │ X-Signature: sha256=...
+         ▼
+┌─────────────────┐
+│ xiaoli-chat-    │
+│   webhook       │ :8080
+│  (Go Server)    │
+└────────┬────────┘
+         │ POST /hooks/xiaoli-chat/webhook
+         │ X-Signature: sha256=...
+         ▼
+┌─────────────────┐
+│   OpenClaw      │
+│    Gateway      │ :18789
+│  (xiaoli-chat   │
+│    plugin)      │
+└────────┬────────┘
+         │ SSE /stream?chatId=...
+         │
+         ▼
+┌─────────────────┐
+│ xiaoli-chat-    │
+│   webhook       │
+│  (Go Server)    │
+└────────┬────────┘
+         │ POST /messages
+         │
+         ▼
+┌─────────────────┐
+│  Xiaoli Chat    │
+│   Platform      │
+└─────────────────┘
+```
+
+## 相关文档
+
+- [Webhook 服务器文档](../../xiaoli-chat-webhook/README.md)
+- [测试指南](./TESTING.md)
+- [OpenClaw 插件开发](../../docs/plugins/building-plugins.md)

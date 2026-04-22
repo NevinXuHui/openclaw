@@ -5,12 +5,25 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 PLUGIN_DIR="${SCRIPT_DIR}"
 PLUGIN_ID="xiaoli-chat"
-INSTALL_MODE="local"  # 默认本地路径模式
+INSTALL_MODE="local"
 
-for arg in "$@"; do
-  case "$arg" in
-    -h|--help)
-      cat <<'EOF'
+# 检测 OpenClaw 配置目录
+if [[ -n "${OPENCLAW_CONFIG_DIR:-}" ]]; then
+  OPENCLAW_DIR="${OPENCLAW_CONFIG_DIR}"
+elif [[ -d "${HOME}/.openclaw" ]]; then
+  OPENCLAW_DIR="${HOME}/.openclaw"
+else
+  printf 'OpenClaw config directory not found. Tried:\n' >&2
+  printf '  - OPENCLAW_CONFIG_DIR env var\n' >&2
+  printf '  - %s/.openclaw\n' "${HOME}" >&2
+  exit 1
+fi
+
+OPENCLAW_CONFIG="${OPENCLAW_DIR}/openclaw.json"
+
+# 帮助信息
+show_help() {
+  cat <<'EOF'
 Usage: ./install-load.sh [OPTIONS]
 
 Builds the local Xiaoli Chat plugin, installs it into OpenClaw, enables it, and restarts the gateway.
@@ -29,6 +42,61 @@ Install Modes:
            - Independent copy in user directory
            - installPath = ~/.openclaw/extensions/xiaoli-chat
 EOF
+}
+
+# 检查命令是否存在
+check_command() {
+  local cmd="$1"
+  local msg="${2:-$cmd command not found in PATH}"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf '%s\n' "$msg" >&2
+    exit 1
+  fi
+}
+
+# 检查文件是否存在
+check_file() {
+  local file="$1"
+  local msg="${2:-File not found: $file}"
+  if [[ ! -f "$file" ]]; then
+    printf '%s\n' "$msg" >&2
+    exit 1
+  fi
+}
+
+# 检查目录是否存在
+check_dir() {
+  local dir="$1"
+  local msg="${2:-Directory not found: $dir}"
+  if [[ ! -d "$dir" ]]; then
+    printf '%s\n' "$msg" >&2
+    exit 1
+  fi
+}
+
+# 检查文件是否可执行
+check_executable() {
+  local file="$1"
+  if [[ ! -x "$file" ]]; then
+    printf 'File is not executable: %s\n' "$file" >&2
+    exit 1
+  fi
+}
+
+# 检查文件是否可写
+check_writable() {
+  local file="$1"
+  if [[ ! -w "$file" ]]; then
+    printf 'File is not writable: %s\n' "$file" >&2
+    exit 1
+  fi
+}
+
+# 解析命令行参数
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      show_help
       exit 0
       ;;
     --local)
@@ -44,141 +112,54 @@ EOF
   esac
 done
 
-if ! command -v openclaw >/dev/null 2>&1; then
-  printf 'openclaw command not found in PATH\n' >&2
-  exit 1
-fi
+# 预检查：命令可用性
+printf 'Checking commands...\n'
+check_command openclaw
+check_command pnpm
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  printf 'pnpm command not found in PATH\n' >&2
-  exit 1
-fi
+# 预检查：核心文件和目录
+printf 'Checking plugin structure...\n'
+check_dir "${PLUGIN_DIR}"
+check_dir "${PLUGIN_DIR}/src"
+check_file "${PLUGIN_DIR}/package.json"
+check_file "${PLUGIN_DIR}/openclaw.plugin.json"
+check_file "${PLUGIN_DIR}/index.ts"
+check_file "${PLUGIN_DIR}/tsconfig.json"
+check_file "${PLUGIN_DIR}/tsconfig.build.json"
+check_file "${PLUGIN_DIR}/build.sh"
+check_executable "${PLUGIN_DIR}/build.sh"
 
-if [[ ! -x "${PLUGIN_DIR}/build.sh" ]]; then
-  printf 'build.sh is not executable: %s\n' "${PLUGIN_DIR}/build.sh" >&2
-  exit 1
-fi
+# 预检查：源文件
+printf 'Checking source files...\n'
+for src_file in webhook.ts channel.ts config.ts runtime.ts inbound-runtime.ts outbound.ts types.ts client.ts inbound.ts webhook.test.ts; do
+  check_file "${PLUGIN_DIR}/src/${src_file}"
+done
 
-if [[ ! -f "${PLUGIN_DIR}/openclaw.plugin.json" ]]; then
-  printf 'openclaw.plugin.json not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
+# 预检查：仓库结构
+printf 'Checking repository structure...\n'
+check_dir "${REPO_ROOT}"
+check_file "${REPO_ROOT}/package.json"
+check_file "${REPO_ROOT}/pnpm-workspace.yaml"
+check_file "${REPO_ROOT}/pnpm-lock.yaml"
+check_dir "${REPO_ROOT}/node_modules" "repo node_modules not found; run pnpm install first"
 
-if [[ ! -f "${PLUGIN_DIR}/package.json" ]]; then
-  printf 'package.json not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
+# 预检查：测试辅助文件
+check_dir "${REPO_ROOT}/test/helpers"
+check_file "${REPO_ROOT}/test/helpers/mock-incoming-request.ts"
 
-if [[ ! -f "${PLUGIN_DIR}/tsconfig.build.json" ]]; then
-  printf 'tsconfig.build.json not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
+# 预检查：Plugin SDK
+check_file "${REPO_ROOT}/src/plugin-sdk/core.ts"
+check_file "${REPO_ROOT}/src/plugin-sdk/webhook-ingress.ts"
 
-if [[ ! -f "${PLUGIN_DIR}/tsconfig.json" ]]; then
-  printf 'tsconfig.json not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
+# 预检查：OpenClaw 配置
+printf 'Checking OpenClaw configuration...\n'
+check_dir "${OPENCLAW_DIR}"
+check_writable "${OPENCLAW_DIR}"
+check_file "${OPENCLAW_CONFIG}"
+check_writable "${OPENCLAW_CONFIG}"
 
-if [[ ! -d "${PLUGIN_DIR}/src" ]]; then
-  printf 'src directory not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/index.ts" ]]; then
-  printf 'index.ts not found under %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/package.json" ]]; then
-  printf 'repo root package.json not found under %s\n' "${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/pnpm-workspace.yaml" ]]; then
-  printf 'pnpm-workspace.yaml not found under %s\n' "${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/node_modules" ]]; then
-  printf 'repo node_modules not found under %s; run pnpm install first\n' "${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/extensions/xiaoli-chat" ]]; then
-  printf 'expected plugin directory missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/package.json" ]]; then
-  printf 'expected plugin package.json missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/package.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/openclaw.plugin.json" ]]; then
-  printf 'expected plugin manifest missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/openclaw.plugin.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" ]]; then
-  printf 'expected build script missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.build.json" ]]; then
-  printf 'expected build tsconfig missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.build.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.json" ]]; then
-  printf 'expected typecheck tsconfig missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.json" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/extensions/xiaoli-chat/src" ]]; then
-  printf 'expected plugin src missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/index.ts" ]]; then
-  printf 'expected plugin index missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/index.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" ]]; then
-  printf 'expected install script missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" >&2
-  exit 1
-fi
-
-if [[ ! -x "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" ]]; then
-  printf 'install-load.sh is not executable: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" >&2
-  exit 1
-fi
-
-if [[ ! -x "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" ]]; then
-  printf 'repo build.sh is not executable: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" >&2
-  exit 1
-fi
-
-if [[ ! -d "/home/xuhui/.openclaw" ]]; then
-  printf 'OpenClaw config directory not found: /home/xuhui/.openclaw\n' >&2
-  exit 1
-fi
-
-if [[ ! -w "/home/xuhui/.openclaw" ]]; then
-  printf 'OpenClaw config directory is not writable: /home/xuhui/.openclaw\n' >&2
-  exit 1
-fi
-
-if [[ ! -f "/home/xuhui/.openclaw/openclaw.json" ]]; then
-  printf 'OpenClaw config file not found: /home/xuhui/.openclaw/openclaw.json\n' >&2
-  exit 1
-fi
-
-if [[ ! -w "/home/xuhui/.openclaw/openclaw.json" ]]; then
-  printf 'OpenClaw config file is not writable: /home/xuhui/.openclaw/openclaw.json\n' >&2
-  exit 1
-fi
-
+# 预检查：OpenClaw 命令可用性
+printf 'Checking OpenClaw commands...\n'
 if ! openclaw --version >/dev/null 2>&1; then
   printf 'openclaw command is not runnable; check your installation\n' >&2
   exit 1
@@ -194,340 +175,195 @@ if ! openclaw plugins list >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! openclaw gateway restart --help >/dev/null 2>&1; then
-  printf 'openclaw gateway restart is unavailable on this host\n' >&2
-  exit 1
-fi
-
-if ! openclaw plugins enable --help >/dev/null 2>&1; then
-  printf 'openclaw plugins enable is unavailable on this host\n' >&2
-  exit 1
-fi
-
-if ! openclaw plugins install --help >/dev/null 2>&1; then
-  printf 'openclaw plugins install is unavailable on this host\n' >&2
-  exit 1
-fi
+for cmd in "gateway restart" "plugins enable" "plugins install"; do
+  if ! openclaw $cmd --help >/dev/null 2>&1; then
+    printf 'openclaw %s is unavailable on this host\n' "$cmd" >&2
+    exit 1
+  fi
+done
 
 if ! pnpm exec tsc --version >/dev/null 2>&1; then
   printf 'TypeScript compiler is unavailable; run pnpm install first\n' >&2
   exit 1
 fi
 
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.ts" ]]; then
-  printf 'expected webhook entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/channel.ts" ]]; then
-  printf 'expected channel entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/channel.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/config.ts" ]]; then
-  printf 'expected config entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/config.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/runtime.ts" ]]; then
-  printf 'expected runtime entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/runtime.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound-runtime.ts" ]]; then
-  printf 'expected inbound runtime entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound-runtime.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/outbound.ts" ]]; then
-  printf 'expected outbound entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/outbound.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/types.ts" ]]; then
-  printf 'expected types entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/types.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/client.ts" ]]; then
-  printf 'expected client entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/client.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound.ts" ]]; then
-  printf 'expected inbound entry missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.test.ts" ]]; then
-  printf 'expected webhook test missing: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.test.ts" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/test/helpers" ]]; then
-  printf 'expected test helpers directory missing: %s\n' "${REPO_ROOT}/test/helpers" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/test/helpers/mock-incoming-request.ts" ]]; then
-  printf 'expected mock incoming request helper missing: %s\n' "${REPO_ROOT}/test/helpers/mock-incoming-request.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/src/plugin-sdk/core.ts" ]]; then
-  printf 'expected plugin SDK core missing: %s\n' "${REPO_ROOT}/src/plugin-sdk/core.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/src/plugin-sdk/webhook-ingress.ts" ]]; then
-  printf 'expected webhook ingress SDK missing: %s\n' "${REPO_ROOT}/src/plugin-sdk/webhook-ingress.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/pnpm-lock.yaml" ]]; then
-  printf 'pnpm-lock.yaml not found under %s\n' "${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" ]]; then
-  printf 'expected install script missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/install-load.sh" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" ]]; then
-  printf 'expected build script missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/build.sh" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/package.json" ]]; then
-  printf 'expected package.json missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/package.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/openclaw.plugin.json" ]]; then
-  printf 'expected manifest missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/openclaw.plugin.json" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/extensions/xiaoli-chat/src" ]]; then
-  printf 'expected src missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/index.ts" ]]; then
-  printf 'expected index missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/index.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.build.json" ]]; then
-  printf 'expected build tsconfig missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.build.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.json" ]]; then
-  printf 'expected typecheck tsconfig missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/tsconfig.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.ts" ]]; then
-  printf 'expected webhook entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/channel.ts" ]]; then
-  printf 'expected channel entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/channel.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/config.ts" ]]; then
-  printf 'expected config entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/config.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/runtime.ts" ]]; then
-  printf 'expected runtime entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/runtime.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound-runtime.ts" ]]; then
-  printf 'expected inbound runtime entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound-runtime.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/outbound.ts" ]]; then
-  printf 'expected outbound entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/outbound.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/types.ts" ]]; then
-  printf 'expected types entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/types.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/client.ts" ]]; then
-  printf 'expected client entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/client.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound.ts" ]]; then
-  printf 'expected inbound entry missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/inbound.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.test.ts" ]]; then
-  printf 'expected webhook test missing after validation: %s\n' "${REPO_ROOT}/extensions/xiaoli-chat/src/webhook.test.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/test/helpers/mock-incoming-request.ts" ]]; then
-  printf 'expected request helper missing after validation: %s\n' "${REPO_ROOT}/test/helpers/mock-incoming-request.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/src/plugin-sdk/core.ts" ]]; then
-  printf 'expected plugin SDK core missing after validation: %s\n' "${REPO_ROOT}/src/plugin-sdk/core.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/src/plugin-sdk/webhook-ingress.ts" ]]; then
-  printf 'expected webhook ingress missing after validation: %s\n' "${REPO_ROOT}/src/plugin-sdk/webhook-ingress.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${REPO_ROOT}/pnpm-lock.yaml" ]]; then
-  printf 'expected pnpm-lock.yaml missing after validation: %s\n' "${REPO_ROOT}/pnpm-lock.yaml" >&2
-  exit 1
-fi
-
-if [[ ! -d "${REPO_ROOT}/node_modules" ]]; then
-  printf 'expected node_modules missing after validation: %s\n' "${REPO_ROOT}/node_modules" >&2
-  exit 1
-fi
-
+# 检查插件是否已安装
 if ! openclaw plugins inspect "${PLUGIN_ID}" >/dev/null 2>&1; then
-  printf 'plugin %s is not yet inspectable; install will proceed and create it\n' "${PLUGIN_ID}"
+  printf 'Plugin %s is not yet installed; install will proceed and create it\n' "${PLUGIN_ID}"
 fi
 
-if [[ ! -d "${PLUGIN_DIR}" ]]; then
-  printf 'plugin directory disappeared during validation: %s\n' "${PLUGIN_DIR}" >&2
-  exit 1
+printf 'Preflight checks passed.\n\n'
+
+# 修复所有权问题（如果以 root 运行）
+if [[ $EUID -eq 0 ]]; then
+  printf '[0/6] Fixing ownership (running as root)...\n'
+  chown -R root:root "${PLUGIN_DIR}"
+  printf 'Plugin directory ownership set to root:root\n'
 fi
 
-if [[ ! -d "${REPO_ROOT}" ]]; then
-  printf 'repo root disappeared during validation: %s\n' "${REPO_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/install-load.sh" ]]; then
-  printf 'install script disappeared during validation: %s\n' "${PLUGIN_DIR}/install-load.sh" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/build.sh" ]]; then
-  printf 'build script disappeared during validation: %s\n' "${PLUGIN_DIR}/build.sh" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/package.json" ]]; then
-  printf 'package.json disappeared during validation: %s\n' "${PLUGIN_DIR}/package.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/openclaw.plugin.json" ]]; then
-  printf 'manifest disappeared during validation: %s\n' "${PLUGIN_DIR}/openclaw.plugin.json" >&2
-  exit 1
-fi
-
-if [[ ! -d "${PLUGIN_DIR}/src" ]]; then
-  printf 'src disappeared during validation: %s\n' "${PLUGIN_DIR}/src" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/index.ts" ]]; then
-  printf 'index disappeared during validation: %s\n' "${PLUGIN_DIR}/index.ts" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/tsconfig.build.json" ]]; then
-  printf 'build tsconfig disappeared during validation: %s\n' "${PLUGIN_DIR}/tsconfig.build.json" >&2
-  exit 1
-fi
-
-if [[ ! -f "${PLUGIN_DIR}/tsconfig.json" ]]; then
-  printf 'typecheck tsconfig disappeared during validation: %s\n' "${PLUGIN_DIR}/tsconfig.json" >&2
-  exit 1
-fi
-
-if [[ ! -d "/home/xuhui/.openclaw" ]]; then
-  printf 'OpenClaw config directory disappeared during validation: /home/xuhui/.openclaw\n' >&2
-  exit 1
-fi
-
-if [[ ! -f "/home/xuhui/.openclaw/openclaw.json" ]]; then
-  printf 'OpenClaw config file disappeared during validation: /home/xuhui/.openclaw/openclaw.json\n' >&2
-  exit 1
-fi
-
-printf 'Preflight checks passed.\n'
+# 构建插件
 cd "${REPO_ROOT}"
-
-printf '[1/5] Building %s...\n' "${PLUGIN_ID}"
+printf '[1/6] Building %s...\n' "${PLUGIN_ID}"
 "${PLUGIN_DIR}/build.sh"
 
+# 配置插件白名单
+printf '[2/6] Configuring plugin allowlist...\n'
+CURRENT_ALLOW=$(openclaw config get plugins.allow 2>/dev/null || echo "[]")
+if [[ "${CURRENT_ALLOW}" == "[]" ]] || ! echo "${CURRENT_ALLOW}" | grep -q "${PLUGIN_ID}"; then
+  printf 'Adding %s to plugins.allow...\n' "${PLUGIN_ID}"
+  # 获取现有的允许列表
+  EXISTING_PLUGINS=$(openclaw config get plugins.allow 2>/dev/null | grep -oP '"\K[^"]+' | tr '\n' ',' | sed 's/,$//')
+  if [[ -n "${EXISTING_PLUGINS}" ]]; then
+    NEW_ALLOW="[\"${EXISTING_PLUGINS}\",\"${PLUGIN_ID}\"]"
+  else
+    NEW_ALLOW="[\"${PLUGIN_ID}\"]"
+  fi
+  openclaw config set plugins.allow "${NEW_ALLOW}"
+else
+  printf '%s already in plugins.allow\n' "${PLUGIN_ID}"
+fi
+
+# 安装插件
 if [[ "${INSTALL_MODE}" == "copy" ]]; then
-  INSTALL_TARGET="/home/xuhui/.openclaw/extensions/${PLUGIN_ID}"
+  INSTALL_TARGET="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
   TEMP_TARGET="${INSTALL_TARGET}.tmp.$$"
 
-  # 检查是否已安装,如果已安装则卸载配置
+  # 卸载现有配置
   if openclaw plugins inspect "${PLUGIN_ID}" >/dev/null 2>&1; then
-    printf '[2/5] Uninstalling existing %s configuration...\n' "${PLUGIN_ID}"
+    printf '[3/6] Uninstalling existing %s configuration...\n' "${PLUGIN_ID}"
     openclaw plugins uninstall "${PLUGIN_ID}" -y 2>/dev/null || true
   fi
 
-  # 删除旧文件 (如果存在)
+  # 删除旧安装
   if [[ -d "${INSTALL_TARGET}" ]]; then
-    printf '[2/5] Removing old installation at %s...\n' "${INSTALL_TARGET}"
+    printf '[3/6] Removing old installation at %s...\n' "${INSTALL_TARGET}"
     rm -rf "${INSTALL_TARGET}"
   fi
 
-  # 清理可能存在的临时目录
+  # 清理临时目录
   rm -rf "${TEMP_TARGET}"
 
-  printf '[2/5] Preparing files in temporary directory...\n'
+  printf '[3/6] Preparing files in temporary directory...\n'
   mkdir -p "${TEMP_TARGET}"
 
-  # 复制编译后的文件到根目录 (不保留 dist/ 子目录)
+  # 复制编译后的文件
   cp -r "${PLUGIN_DIR}/dist/"* "${TEMP_TARGET}/"
   cp "${PLUGIN_DIR}/openclaw.plugin.json" "${TEMP_TARGET}/"
 
-  # 复制 package.json 并修正入口路径
+  # 修正 package.json 入口路径
   sed 's|"./index.ts"|"./index.js"|g' "${PLUGIN_DIR}/package.json" > "${TEMP_TARGET}/package.json"
 
-  # 重命名到最终位置
+  # 移动到最终位置
   mv "${TEMP_TARGET}" "${INSTALL_TARGET}"
 
-  printf '[3/5] Plugin copied to %s\n' "${INSTALL_TARGET}"
-  printf '[3/5] OpenClaw will auto-discover it on next restart\n'
+  printf '[4/6] Plugin copied to %s\n' "${INSTALL_TARGET}"
+  printf '[4/6] OpenClaw will auto-discover it on next restart\n'
 
-  printf '[4/5] Enabling %s...\n' "${PLUGIN_ID}"
+  # 清除 plugins.load.paths（copy 模式不需要）
+  printf '[4/6] Clearing plugins.load.paths (not needed in copy mode)...\n'
+  openclaw config set plugins.load.paths "[]"
+
+  printf '[4/6] Enabling %s...\n' "${PLUGIN_ID}"
   openclaw plugins enable "${PLUGIN_ID}"
 else
-  # 本地路径模式:检查是否已安装,如果已安装则先卸载
+  # 本地路径模式
   if openclaw plugins inspect "${PLUGIN_ID}" >/dev/null 2>&1; then
-    printf '[2/5] Uninstalling existing %s...\n' "${PLUGIN_ID}"
+    printf '[3/6] Uninstalling existing %s...\n' "${PLUGIN_ID}"
     openclaw plugins uninstall "${PLUGIN_ID}" -y 2>/dev/null || true
   fi
 
-  printf '[2/5] Installing %s from local path (development mode)...\n' "${PLUGIN_ID}"
+  printf '[3/6] Installing %s from local path (development mode)...\n' "${PLUGIN_ID}"
   openclaw plugins install -l "${PLUGIN_DIR}"
 
-  printf '[4/5] Enabling %s...\n' "${PLUGIN_ID}"
+  # 确保 plugins.load.paths 包含插件路径（local 模式需要）
+  printf '[4/6] Ensuring %s is in plugins.load.paths...\n' "${PLUGIN_ID}"
+  CURRENT_PATHS=$(openclaw config get plugins.load.paths 2>/dev/null || echo "[]")
+  if ! echo "${CURRENT_PATHS}" | grep -q "${PLUGIN_DIR}"; then
+    printf 'Adding %s to plugins.load.paths...\n' "${PLUGIN_DIR}"
+    openclaw config set plugins.load.paths "[\"${PLUGIN_DIR}\"]"
+  else
+    printf '%s already in plugins.load.paths\n' "${PLUGIN_DIR}"
+  fi
+
+  printf '[4/6] Enabling %s...\n' "${PLUGIN_ID}"
   openclaw plugins enable "${PLUGIN_ID}"
 fi
 
-printf '[5/5] Restarting gateway...\n'
-openclaw gateway restart
+# 配置通道
+printf '[5/6] Configuring %s channel...\n' "${PLUGIN_ID}"
 
-printf '\nDone. Verify with:\n'
-printf 'openclaw plugins list\n'
-printf 'openclaw plugins inspect %s\n' "${PLUGIN_ID}"
+# 生成 webhook secret
+WEBHOOK_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+
+# 配置 OpenClaw
+printf 'Setting up channel configuration...\n'
+openclaw config set channels.xiaoli-chat.enabled true
+openclaw config set channels.xiaoli-chat.token "test-token-placeholder"
+openclaw config set channels.xiaoli-chat.baseUrl "http://localhost:8088"
+openclaw config set channels.xiaoli-chat.webhookSecret "${WEBHOOK_SECRET}"
+openclaw config set channels.xiaoli-chat.dmSecurity "allowlist"
+
+# 配置 webhook 服务器
+WEBHOOK_DIR="${REPO_ROOT}/xiaoli-chat-webhook"
+if [[ -d "${WEBHOOK_DIR}" ]]; then
+  printf 'Configuring xiaoli-chat-webhook server...\n'
+
+  # 获取 OpenClaw Gateway token
+  OPENCLAW_TOKEN=$(openclaw config get gateway.auth.token 2>/dev/null || echo "")
+
+  # 创建 .env 文件
+  cat > "${WEBHOOK_DIR}/.env" <<EOF
+# Xiaoli Chat Webhook 配置
+
+# Webhook 验证密钥（必须与 Xiaoli Chat 配置一致）
+WEBHOOK_SECRET=${WEBHOOK_SECRET}
+
+# OpenClaw Gateway 地址
+OPENCLAW_URL=http://localhost:18789
+
+# Xiaoli Chat API Token（必须设置）
+XIAOLI_TOKEN=test-token-placeholder
+
+# OpenClaw API Token（如果需要）
+OPENCLAW_TOKEN=${OPENCLAW_TOKEN}
+
+# 服务器监听端口
+PORT=8088
+EOF
+
+  printf 'Webhook server configuration saved to %s/.env\n' "${WEBHOOK_DIR}"
+  printf '\nTo start the webhook server, run:\n'
+  printf '  cd %s\n' "${WEBHOOK_DIR}"
+  printf '  ./run.sh\n'
+else
+  printf 'Warning: xiaoli-chat-webhook directory not found at %s\n' "${WEBHOOK_DIR}"
+  printf 'Webhook server configuration skipped.\n'
+fi
+
+# 重启 gateway
+printf '\n[6/6] Restarting gateway...\n'
+if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then
+  printf 'Using systemctl to restart gateway...\n'
+  openclaw gateway restart
+else
+  printf 'Manually restarting gateway...\n'
+  pkill -9 -f openclaw-gateway || true
+  sleep 2
+  nohup openclaw gateway run --bind loopback --port 18789 --force > /tmp/openclaw-gateway.log 2>&1 &
+  sleep 3
+fi
+
+# 完成
+printf '\n✅ Installation complete!\n\n'
+printf 'Configuration summary:\n'
+printf '  - Channel: xiaoli-chat\n'
+printf '  - Webhook endpoint: http://localhost:18789/hooks/xiaoli-chat/webhook\n'
+printf '  - Webhook secret: %s\n' "${WEBHOOK_SECRET}"
+printf '  - Base URL: http://localhost:8088\n'
+printf '\nVerify installation:\n'
+printf '  openclaw plugins list\n'
+printf '  openclaw plugins inspect %s\n' "${PLUGIN_ID}"
+printf '  openclaw channels status\n'
+printf '\nNext steps:\n'
+printf '  1. Start the webhook server: cd %s && ./run.sh\n' "${WEBHOOK_DIR}"
+printf '  2. Test webhook endpoint: curl http://localhost:18789/hooks/xiaoli-chat/webhook\n'
