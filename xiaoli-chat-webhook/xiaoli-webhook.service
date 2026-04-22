@@ -1,0 +1,17 @@
+[Unit]
+Description=Xiaoli Chat Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook
+EnvironmentFile=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/.env
+ExecStart=/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/run.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/webhook.log
+StandardError=append:/mine/Code/ai-tools/openclaw/xiaoli-chat-webhook/webhook.log
+
+[Install]
+WantedBy=multi-user.target
